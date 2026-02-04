@@ -2,14 +2,25 @@ from fastapi import FastAPI, UploadFile, File
 from ultralytics import YOLO
 from PIL import Image
 import io
+import os
+import urllib.request
 
-app = FastAPI(
-    title="Epicheck AI Detection API",
-    version="1.0"
-)
+app = FastAPI(title="Epicheck Detection API")
 
-# Load YOLOv8 detection model
-model = YOLO("models/epicheck_detect.pt")
+MODEL_PATH = "models/epicheck_detect.pt"
+MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt"
+
+# Ensure models folder exists
+os.makedirs("models", exist_ok=True)
+
+# Download model if not present
+if not os.path.exists(MODEL_PATH):
+    print("Downloading YOLO model...")
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    print("Model downloaded")
+
+# Load model
+model = YOLO(MODEL_PATH)
 
 @app.get("/")
 def health():
@@ -23,7 +34,6 @@ async def predict(file: UploadFile = File(...)):
     results = model(image, conf=0.25)
 
     detections = []
-
     for box in results[0].boxes:
         cls_id = int(box.cls[0])
         conf = float(box.conf[0])
@@ -41,7 +51,4 @@ async def predict(file: UploadFile = File(...)):
             }
         })
 
-    return {
-        "count": len(detections),
-        "detections": detections
-    }
+    return {"count": len(detections), "detections": detections}
