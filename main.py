@@ -1,34 +1,46 @@
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
+from ultralytics import YOLO
 import io
 import os
 import urllib.request
 import base64
-import numpy as np
-import onnxruntime as ort
 import cv2
+import numpy as np
 
 # ================== CONFIG ==================
 MODEL_DIR = "models"
-MODEL_NAME = "epicheck_detect.onnx"  # ONNX model
-# If missing, fallback to YOLOv8n just to have a model
-MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt"
-
-
+TRAINED_MODEL = "epicheck_detect.pt"   # your trained model (may not exist yet)
+FALLBACK_MODEL = "yolov8n.pt"          # small pretrained fallback
 API_KEY = "nfvskelcmSDF@fnkewjdn5820ndsfjewER_fudwjkaty7247"
 
-MODEL_PATH = os.path.join(MODEL_DIR, MODEL_NAME)
+# URLs for fallback download
+FALLBACK_URL = "https://github.com/ultralytics/assets/releases/download/v8.0/yolov8n.pt"
+
+# Full paths
+trained_path = os.path.join(MODEL_DIR, TRAINED_MODEL)
+fallback_path = os.path.join(MODEL_DIR, FALLBACK_MODEL)
+
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# Download model if missing
-if not os.path.exists(MODEL_PATH):
-    print("⬇️ Downloading ONNX model...")
-    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+# Download fallback model if missing
+if not os.path.exists(fallback_path):
+    print("⬇️ Downloading fallback YOLOv8n model...")
+    urllib.request.urlretrieve(FALLBACK_URL, fallback_path)
+
+# Decide which model to load
+if os.path.exists(trained_path):
+    print("✅ Loading trained model")
+    model = YOLO(trained_path)
+else:
+    print("⚠️ Trained model not found, using fallback YOLOv8n")
+    model = YOLO(fallback_path)
 
 # ================== FastAPI ==================
 app = FastAPI(title="Epicheck Detection API")
 
+# CORS setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -50,71 +62,40 @@ def verify_api_key(request: Request, x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
-# ================== ONNX Setup ==================
-session = ort.InferenceSession(MODEL_PATH)
-
-# Load class names from your trained model (example placeholder)
-# Replace with actual class names used in training
-CLASS_NAMES = [
-    "eczema", "psoriasis", "ringworm", "lichen_planus", "seborrheic_keratoses"
-]
-
 # ================== ROUTES ==================
 @app.post("/predict")
 async def predict(file: UploadFile = File(...), _: None = Depends(verify_api_key)):
     # Read image
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img_np = np.array(image)
 
-    # Resize to 640x640 (YOLO standard)
-    img_resized = cv2.resize(img_np, (640, 640))
-    img_input = img_resized.astype(np.float32) / 255.0
-    img_input = np.transpose(img_input, (2, 0, 1))  # HWC → CHW
-    img_input = np.expand_dims(img_input, axis=0)    # batch dimension
+    # YOLO inference with safe letterbox
+    results = model.predict(
+        source=image,
+        imgsz=640,
+        conf=0.25,
+        device="cpu",
+        stream=False,
+        verbose=False
+    )
 
-    # Run ONNX inference
-    outputs = session.run(None, {"images": img_input})
+    # Annotate image
+    annotated = results[0].plot()  # numpy BGR array
+    annotated_image = Image.fromarray(annotated[..., ::-1])  # Convert BGR → RGB
 
-    # Parse ONNX outputs to boxes, confidence, class_id
-    # YOLOv8 ONNX outputs: [batch, num_predictions, 6] → (x1, y1, x2, y2, conf, cls)
-    boxes_raw = outputs[0][0]  # first image in batch
-    boxes = []
-    for b in boxes_raw:
-        conf = float(b[4])
-        if conf < 0.25:
-            continue
-        cls_id = int(b[5])
-        x1, y1, x2, y2 = b[:4]
-        boxes.append({
-            "cls_id": cls_id,
-            "conf": conf,
-            "bbox": [x1, y1, x2, y2]
-        })
-
-    # Draw boxes on image
-    annotated_image = img_np.copy()
-    for b in boxes:
-        cls_id = b["cls_id"]
-        conf = b["conf"]
-        x1, y1, x2, y2 = map(int, b["bbox"])
-        label = f"{CLASS_NAMES[cls_id]} {conf:.2f}"
-        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0,255,0), 2)
-        cv2.putText(annotated_image, label, (x1, max(y1-5,0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
-
-    # Convert annotated image to base64
-    annotated_pil = Image.fromarray(annotated_image)
+    # Encode annotated image to base64
     buffer = io.BytesIO()
-    annotated_pil.save(buffer, format="JPEG", quality=85)
+    annotated_image.save(buffer, format="JPEG", quality=85)
     encoded_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    # Prepare detections for API
+    # Parse detections
     detections = []
-    for b in boxes:
-        cls_id = b["cls_id"]
-        conf = b["conf"]
+    for box in results[0].boxes:
+        cls_id = int(box.cls[0])
+        conf = float(box.conf[0])
+        cls_name = model.names[cls_id]
         detections.append({
-            "class": CLASS_NAMES[cls_id],
+            "class": cls_name,
             "confidence": round(conf, 4)
         })
 
@@ -123,3 +104,10 @@ async def predict(file: UploadFile = File(...), _: None = Depends(verify_api_key
         "detections": detections,
         "annotated_image": encoded_image
     }
+
+# ================== RUN APP ==================
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    port = int(os.environ.get("PORT", 8000))  # Render dynamically assigns PORT
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
