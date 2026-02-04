@@ -15,25 +15,25 @@ import os
 import urllib.request
 import base64
 
-# ---------------- CONFIG ----------------
+# ================== CONFIG ==================
 MODEL_DIR = "models"
 MODEL_NAME = "epicheck_detect.pt"
 
-# Temporary fallback model (until your trained model is ready)
+# Temporary fallback model (replace when your trained model is ready)
 MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt"
 
 API_KEY = "nfvskelcmSDF@fnkewjdn5820ndsfjewER_fudwjkaty7247"
 
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_NAME)
-# ----------------------------------------
+# ============================================
 
-# Disable Ultralytics online checks
+# Disable Ultralytics online / GitHub checks
 os.environ["ULTRALYTICS_HUB"] = "False"
 os.environ["YOLO_VERBOSE"] = "False"
 
 app = FastAPI(title="Epicheck Detection API")
 
-# ---------------- CORS (FIXED) ----------------
+# ================== CORS ====================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -48,7 +48,7 @@ app.add_middleware(
         "x-api-key",
     ],
 )
-# ----------------------------------------------
+# ============================================
 
 # Ensure model directory exists
 os.makedirs(MODEL_DIR, exist_ok=True)
@@ -58,10 +58,10 @@ if not os.path.exists(MODEL_PATH):
     print("⬇️ Downloading YOLO model...")
     urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
-# Load model (CPU only – Render compatible)
+# Load model once at startup (CPU – Render compatible)
 model = YOLO(MODEL_PATH)
 
-# ---------------- ROUTES ----------------
+# ================== ROUTES ==================
 
 @app.get("/")
 def health():
@@ -72,7 +72,7 @@ def verify_api_key(
     request: Request,
     x_api_key: str = Header(None)
 ):
-    # 🔓 Allow CORS preflight without API key
+    # ✅ Allow CORS preflight
     if request.method == "OPTIONS":
         return
 
@@ -85,22 +85,27 @@ async def predict(
     file: UploadFile = File(...),
     _: None = Depends(verify_api_key)
 ):
-    # Read image
+    # Read uploaded image
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    # Run detection
-    results = model(image, conf=0.25)
+    # 🔥 YOLO inference with SAFE letterbox resizing
+    results = model.predict(
+        image,
+        imgsz=640,        # SAFE: preserves aspect ratio, no lesion cut
+        conf=0.25,
+        verbose=False
+    )
 
-    # Annotated image (YOLO draws boxes)
+    # Get annotated image (YOLO draws boxes)
     annotated = results[0].plot()  # numpy array (BGR)
 
     # Convert to PIL (RGB)
     annotated_image = Image.fromarray(annotated[..., ::-1])
 
-    # Convert annotated image to base64
+    # Convert annotated image → base64
     buffer = io.BytesIO()
-    annotated_image.save(buffer, format="JPEG")
+    annotated_image.save(buffer, format="JPEG", quality=85)
     encoded_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     # Parse detections
