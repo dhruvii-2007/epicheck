@@ -13,7 +13,8 @@ import cv2
 MODEL_DIR = "models"
 MODEL_NAME = "epicheck_detect.onnx"  # ONNX model
 # If missing, fallback to YOLOv8n just to have a model
-MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.onnx"
+MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt"
+
 
 API_KEY = "nfvskelcmSDF@fnkewjdn5820ndsfjewER_fudwjkaty7247"
 
