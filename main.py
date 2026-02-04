@@ -91,11 +91,14 @@ async def predict(
 
     # 🔥 YOLO inference with SAFE letterbox resizing
     results = model.predict(
-        image,
-        imgsz=640,        # SAFE: preserves aspect ratio, no lesion cut
-        conf=0.25,
-        verbose=False
-    )
+    source=image,
+    imgsz=640,
+    conf=0.25,
+    device="cpu",
+    stream=False,
+    verbose=False
+)
+
 
     # Get annotated image (YOLO draws boxes)
     annotated = results[0].plot()  # numpy array (BGR)
