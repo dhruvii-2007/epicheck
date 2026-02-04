@@ -1,4 +1,12 @@
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    Header,
+    HTTPException,
+    Depends,
+    Request
+)
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from ultralytics import YOLO
@@ -25,7 +33,7 @@ os.environ["YOLO_VERBOSE"] = "False"
 
 app = FastAPI(title="Epicheck Detection API")
 
-# ---------------- CORS ------------------
+# ---------------- CORS (FIXED) ----------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -33,10 +41,14 @@ app.add_middleware(
         "https://epi-check.great-site.net",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "x-api-key",
+    ],
 )
-# ----------------------------------------
+# ----------------------------------------------
 
 # Ensure model directory exists
 os.makedirs(MODEL_DIR, exist_ok=True)
@@ -56,7 +68,14 @@ def health():
     return {"status": "Epicheck Detection API is running"}
 
 
-def verify_api_key(x_api_key: str = Header(None)):
+def verify_api_key(
+    request: Request,
+    x_api_key: str = Header(None)
+):
+    # 🔓 Allow CORS preflight without API key
+    if request.method == "OPTIONS":
+        return
+
     if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
