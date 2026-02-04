@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException
 from PIL import Image
 from ultralytics import YOLO
 import io
@@ -8,28 +8,22 @@ import urllib.request
 # ---------------- CONFIG ----------------
 MODEL_DIR = "models"
 MODEL_NAME = "epicheck_detect.pt"
-
-# Direct file URL (NO GitHub API calls)
 MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt"
 
+API_KEY = "nfvskelcmSDF@fnkewjdn5820ndsfjewER_fudwjkaty7247"
 MODEL_PATH = os.path.join(MODEL_DIR, MODEL_NAME)
 # ----------------------------------------
 
 app = FastAPI(title="Epicheck Detection API")
 
-# Disable Ultralytics auto-update & GitHub checks
 os.environ["ULTRALYTICS_SETTINGS"] = "False"
-
-# Ensure models directory exists
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# Download model if missing
 if not os.path.exists(MODEL_PATH):
     print("⬇️ Downloading YOLO model...")
     urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
     print("✅ Model downloaded")
 
-# Load model AFTER file exists
 print("🚀 Loading YOLO model...")
 model = YOLO(MODEL_PATH)
 print("✅ Model loaded successfully")
@@ -40,8 +34,17 @@ def health():
     return {"status": "Epicheck Detection API is running"}
 
 
+# 🔐 API key validation
+def verify_api_key(x_api_key: str = Header(None)):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(
+    file: UploadFile = File(...),
+    _: None = verify_api_key
+):
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
@@ -61,7 +64,7 @@ async def predict(file: UploadFile = File(...)):
                 "x1": round(x1, 2),
                 "y1": round(y1, 2),
                 "x2": round(x2, 2),
-                "y2": round(y2, 2),
+                "y2": round(y2, 2)
             }
         })
 
