@@ -1,30 +1,44 @@
 from fastapi import FastAPI, UploadFile, File
-from ultralytics import YOLO
 from PIL import Image
+from ultralytics import YOLO
 import io
 import os
 import urllib.request
 
-app = FastAPI(title="Epicheck Detection API")
+# ---------------- CONFIG ----------------
+MODEL_DIR = "models"
+MODEL_NAME = "epicheck_detect.pt"
 
-MODEL_PATH = "models/epicheck_detect.pt"
+# Direct file URL (NO GitHub API calls)
 MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt"
 
-# Ensure models folder exists
-os.makedirs("models", exist_ok=True)
+MODEL_PATH = os.path.join(MODEL_DIR, MODEL_NAME)
+# ----------------------------------------
 
-# Download model if not present
+app = FastAPI(title="Epicheck Detection API")
+
+# Disable Ultralytics auto-update & GitHub checks
+os.environ["ULTRALYTICS_SETTINGS"] = "False"
+
+# Ensure models directory exists
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# Download model if missing
 if not os.path.exists(MODEL_PATH):
-    print("Downloading YOLO model...")
+    print("⬇️ Downloading YOLO model...")
     urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    print("Model downloaded")
+    print("✅ Model downloaded")
 
-# Load model
+# Load model AFTER file exists
+print("🚀 Loading YOLO model...")
 model = YOLO(MODEL_PATH)
+print("✅ Model loaded successfully")
+
 
 @app.get("/")
 def health():
     return {"status": "Epicheck Detection API is running"}
+
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
@@ -47,8 +61,11 @@ async def predict(file: UploadFile = File(...)):
                 "x1": round(x1, 2),
                 "y1": round(y1, 2),
                 "x2": round(x2, 2),
-                "y2": round(y2, 2)
+                "y2": round(y2, 2),
             }
         })
 
-    return {"count": len(detections), "detections": detections}
+    return {
+        "count": len(detections),
+        "detections": detections
+    }
