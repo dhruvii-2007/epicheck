@@ -4,38 +4,32 @@ from PIL import Image
 from ultralytics import YOLO
 import io
 import os
-import urllib.request
 import base64
-import cv2
-import numpy as np
 
 # ================== CONFIG ==================
 MODEL_DIR = "models"
-TRAINED_MODEL = "epicheck_detect.pt"   # your trained model (may not exist yet)
-FALLBACK_MODEL = "yolov8n.pt"          # small pretrained fallback
+TRAINED_ONNX = "epicheck_detect.onnx"   # your trained model
+FALLBACK_MODEL = "yolov8n.pt"          # small pretrained fallback (local .pt)
 API_KEY = "nfvskelcmSDF@fnkewjdn5820ndsfjewER_fudwjkaty7247"
 
-# URLs for fallback download
-FALLBACK_URL = "https://github.com/ultralytics/assets/releases/download/v8.0/yolov8n.pt"
-
 # Full paths
-trained_path = os.path.join(MODEL_DIR, TRAINED_MODEL)
+trained_path = os.path.join(MODEL_DIR, TRAINED_ONNX)
 fallback_path = os.path.join(MODEL_DIR, FALLBACK_MODEL)
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# Download fallback model if missing
-if not os.path.exists(fallback_path):
-    print("⬇️ Downloading fallback YOLOv8n model...")
-    urllib.request.urlretrieve(FALLBACK_URL, fallback_path)
+# ================== MODEL LOADING ==================
+model = None
 
-# Decide which model to load
 if os.path.exists(trained_path):
-    print("✅ Loading trained model")
-    model = YOLO(trained_path)
-else:
-    print("⚠️ Trained model not found, using fallback YOLOv8n")
+    print(f"✅ Loading trained ONNX model: {TRAINED_ONNX}")
+    model = YOLO(trained_path)  # inference only
+elif os.path.exists(fallback_path):
+    print(f"⚠️ Trained model not found — using fallback YOLOv8n")
     model = YOLO(fallback_path)
+else:
+    print("❌ No model available! Add epicheck_detect.onnx or yolov8n.pt to models/")
+    model = None
 
 # ================== FastAPI ==================
 app = FastAPI(title="Epicheck Detection API")
@@ -65,16 +59,19 @@ def verify_api_key(request: Request, x_api_key: str = Header(None)):
 # ================== ROUTES ==================
 @app.post("/predict")
 async def predict(file: UploadFile = File(...), _: None = Depends(verify_api_key)):
+    if model is None:
+        raise HTTPException(status_code=500, detail="No model loaded for predictions")
+    
     # Read image
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    # YOLO inference with safe letterbox
+    # YOLO inference
     results = model.predict(
         source=image,
         imgsz=640,
         conf=0.25,
-        device="cpu",
+        device="cpu",   # ONNX inference is CPU-only on Render free tier
         stream=False,
         verbose=False
     )
@@ -108,6 +105,5 @@ async def predict(file: UploadFile = File(...), _: None = Depends(verify_api_key
 # ================== RUN APP ==================
 if __name__ == "__main__":
     import uvicorn
-    import os
-    port = int(os.environ.get("PORT", 8000))  # Render dynamically assigns PORT
+    port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
