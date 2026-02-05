@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from ultralytics import YOLO
@@ -6,13 +6,14 @@ import io
 import os
 import base64
 
+from supabase_client import supabase
+from auth import get_current_user
+
 # ================== CONFIG ==================
 MODEL_DIR = "models"
-TRAINED_ONNX = "epicheck_detect.onnx"   # your trained model
-FALLBACK_MODEL = "yolov8n.pt"          # small pretrained fallback (local .pt)
-API_KEY = "nfvskelcmSDF@fnkewjdn5820ndsfjewER_fudwjkaty7247"
+TRAINED_ONNX = "epicheck_detect.onnx"
+FALLBACK_MODEL = "yolov8n.pt"
 
-# Full paths
 trained_path = os.path.join(MODEL_DIR, TRAINED_ONNX)
 fallback_path = os.path.join(MODEL_DIR, FALLBACK_MODEL)
 
@@ -23,18 +24,18 @@ model = None
 
 if os.path.exists(trained_path):
     print(f"✅ Loading trained ONNX model: {TRAINED_ONNX}")
-    model = YOLO(trained_path)  # inference only
+    model = YOLO(trained_path)
 elif os.path.exists(fallback_path):
-    print(f"⚠️ Trained model not found — using fallback YOLOv8n")
+    print("⚠️ Trained model not found — using fallback YOLOv8n")
     model = YOLO(fallback_path)
 else:
-    print("❌ No model available! Add epicheck_detect.onnx or yolov8n.pt to models/")
+    print("❌ No model available! Add epicheck_detect.onnx or yolov8n.pt")
     model = None
 
-# ================== FastAPI ==================
+# ================== FASTAPI ==================
 app = FastAPI(title="Epicheck Detection API")
 
-# CORS setup
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -43,44 +44,41 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "x-api-key"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
+# ================== HEALTH ==================
 @app.get("/")
 def health():
     return {"status": "Epicheck Detection API is running"}
 
-def verify_api_key(request: Request, x_api_key: str = Header(None)):
-    if request.method == "OPTIONS":
-        return
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API key")
-
-# ================== ROUTES ==================
+# ================== PREDICT ==================
 @app.post("/predict")
-async def predict(file: UploadFile = File(...), _: None = Depends(verify_api_key)):
+async def predict(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user)
+):
     if model is None:
-        raise HTTPException(status_code=500, detail="No model loaded for predictions")
-    
+        raise HTTPException(status_code=500, detail="No model loaded")
+
     # Read image
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    # YOLO inference
+    # YOLO inference (UNCHANGED)
     results = model.predict(
         source=image,
         imgsz=640,
         conf=0.25,
-        device="cpu",   # ONNX inference is CPU-only on Render free tier
+        device="cpu",  # Render free tier
         stream=False,
         verbose=False
     )
 
-    # Annotate image
-    annotated = results[0].plot()  # numpy BGR array
-    annotated_image = Image.fromarray(annotated[..., ::-1])  # Convert BGR → RGB
+    # Annotated image
+    annotated = results[0].plot()
+    annotated_image = Image.fromarray(annotated[..., ::-1])
 
-    # Encode annotated image to base64
     buffer = io.BytesIO()
     annotated_image.save(buffer, format="JPEG", quality=85)
     encoded_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
@@ -96,13 +94,26 @@ async def predict(file: UploadFile = File(...), _: None = Depends(verify_api_key
             "confidence": round(conf, 4)
         })
 
+    # Pick top detection (if any)
+    top_class = detections[0]["class"] if detections else "unknown"
+    top_conf = detections[0]["confidence"] if detections else 0.0
+
+    # ================== STORE IN SUPABASE ==================
+    supabase.table("skin_cases").insert({
+        "user_id": user.id,
+        "ai_result": top_class,
+        "ai_confidence": top_conf,
+        "status": "ai_done"
+    }).execute()
+
+    # ================== RESPONSE ==================
     return {
         "count": len(detections),
         "detections": detections,
         "annotated_image": encoded_image
     }
 
-# ================== RUN APP ==================
+# ================== LOCAL RUN ==================
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))

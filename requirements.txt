@@ -7,3 +7,5 @@ python-multipart
 opencv-python-headless
 onnxruntime
 numpy
+supabase
+python-dotenv
