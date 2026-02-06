@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -11,7 +12,7 @@ MODEL_PATH = os.getenv("MODEL_PATH", "models/epicheck_detect.onnx")
 
 CONFIDENCE_THRESHOLD = 0.5
 
-# Fail fast
+# ---- FAIL FAST ----
 if not SUPABASE_URL:
     raise RuntimeError("SUPABASE_URL is not set")
 

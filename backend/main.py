@@ -1,52 +1,52 @@
-from fastapi import FastAPI, UploadFile, File, Depends
-from auth import get_current_user
-from inference.detector import Detector
-from services.severity import calculate_severity
-from services.case_service import create_case
-from config import MODEL_PATH
+import config  # FORCE env load first (do not remove)
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
-from PIL import Image
-import io
+import cv2
+import tempfile
+import os
+
+from supabase_client import supabase
+from detector import Detector
 
 app = FastAPI(title="Epicheck API")
 
-detector = Detector(MODEL_PATH)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+detector = Detector()
+
+@app.get("/")
+def health():
+    return {"status": "Epicheck backend running"}
 
 @app.post("/api/v1/analyze")
-async def analyze_case(
-    file: UploadFile = File(...),
-    symptoms: str = "",
-    user = Depends(get_current_user)
-):
-    image = Image.open(io.BytesIO(await file.read())).convert("RGB")
-    image_np = np.array(image)
+async def analyze_image(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
 
-    predictions = detector.predict(image_np)
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
 
-    if not predictions:
-        return {"error": "No condition detected"}
+        image = cv2.imread(tmp_path)
+        os.unlink(tmp_path)
 
-    top = max(predictions, key=lambda x: x["confidence"])
+        if image is None:
+            raise HTTPException(status_code=400, detail="Invalid image")
 
-    severity_score, risk, action = calculate_severity(
-        symptoms.split(","),
-        top["confidence"]
-    )
+        predictions = detector.predict(image)
 
-    case = create_case(
-        user.id,
-        "uploaded_later",
-        top["label"],
-        top["confidence"],
-        severity_score,
-        risk,
-        action
-    )
+        return {
+            "success": True,
+            "predictions": predictions
+        }
 
-    return {
-        "case_id": case["id"],
-        "prediction": top,
-        "risk_level": risk,
-        "action_plan": action,
-        "disclaimer": "This is not a medical diagnosis"
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
