@@ -5,21 +5,21 @@ from fastapi.security import HTTPBearer
 from dotenv import load_dotenv
 import time
 
-from .config import API_VERSION
-from .logger import logger
+from app.config import API_VERSION
+from app.logger import logger
 
 # Routers
-from .routes.user import router as user_router
-from .routes.doctor import router as doctor_router
-from .routes.admin import router as admin_router
-from .routes.tickets import router as tickets_router
+from app.routes.user import router as user_router
+from app.routes.doctor import router as doctor_router
+from app.routes.admin import router as admin_router
+from app.routes.tickets import router as tickets_router
 
 # System
-from .system.notifications import router as notifications_router
-from .system.feature_flags import router as feature_flags_router
+from app.system.notifications import router as notifications_router
+from app.system.feature_flags import router as feature_flags_router
 
 # Rate limiting
-from .ratelimit import init_rate_limit_state
+from app.ratelimit import init_rate_limit_state
 
 load_dotenv()
 
@@ -54,7 +54,7 @@ def startup():
     logger.info("Epicheck API started")
 
 # --------------------------------------------------
-# REQUEST LOGGING (request_logs table)
+# REQUEST LOGGING
 # --------------------------------------------------
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
@@ -63,7 +63,7 @@ async def request_logger(request: Request, call_next):
     duration = round(time.time() - start_time, 3)
 
     try:
-        from .supabase_client import db_insert
+        from app.supabase_client import db_insert
 
         db_insert(
             "request_logs",

@@ -1,19 +1,22 @@
 from datetime import datetime
-from fastapi import HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from ..supabase_client import (
+from app.supabase_client import (
     db_select,
     db_insert,
     db_update
 )
-from ..config import (
+from app.config import (
     NOTIFY_SYSTEM,
     NOTIFY_CASE,
     NOTIFY_ADMIN
 )
+from app.auth import require_user, require_admin
+
+router = APIRouter()
 
 # --------------------------------------------------
-# CREATE NOTIFICATION
+# INTERNAL HELPERS
 # --------------------------------------------------
 
 def create_notification(
@@ -24,10 +27,6 @@ def create_notification(
     type: str = NOTIFY_SYSTEM,
     action_url: str | None = None
 ):
-    """
-    Creates a notification for a user.
-    """
-
     return db_insert(
         table="notifications",
         payload={
@@ -43,31 +42,25 @@ def create_notification(
 
 
 # --------------------------------------------------
-# GET USER NOTIFICATIONS
+# USER: GET MY NOTIFICATIONS
 # --------------------------------------------------
-
-def get_user_notifications(user_id: str):
-    """
-    Fetch all notifications for a user.
-    """
-
+@router.get("/")
+def get_my_notifications(user=Depends(require_user)):
     return db_select(
         table="notifications",
-        filters={
-            "user_id": user_id
-        }
+        filters={"user_id": user["id"]},
+        order="created_at.desc"
     )
 
 
 # --------------------------------------------------
-# MARK NOTIFICATION AS READ
+# USER: MARK AS READ
 # --------------------------------------------------
-
-def mark_notification_read(notification_id: str, user_id: str):
-    """
-    Marks a notification as read.
-    """
-
+@router.post("/{notification_id}/read")
+def mark_notification_read(
+    notification_id: str,
+    user=Depends(require_user)
+):
     notification = db_select(
         table="notifications",
         filters={"id": notification_id},
@@ -77,7 +70,7 @@ def mark_notification_read(notification_id: str, user_id: str):
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
 
-    if notification["user_id"] != user_id:
+    if notification["user_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Forbidden")
 
     db_update(
@@ -90,43 +83,48 @@ def mark_notification_read(notification_id: str, user_id: str):
 
 
 # --------------------------------------------------
-# ADMIN BROADCAST (SYSTEM)
+# ADMIN: BROADCAST SYSTEM NOTIFICATION
 # --------------------------------------------------
-
+@router.post("/broadcast")
 def broadcast_system_notification(
-    *,
-    user_ids: list[str],
-    title: str,
-    message: str,
-    action_url: str | None = None
+    payload: dict,
+    admin=Depends(require_admin)
 ):
     """
-    Broadcasts a system notification to multiple users.
+    payload = {
+        "user_ids": [...],
+        "title": "...",
+        "message": "...",
+        "action_url": "optional"
+    }
     """
 
     created = []
 
-    for uid in user_ids:
+    for uid in payload["user_ids"]:
         created.append(
             create_notification(
                 user_id=uid,
-                title=title,
-                message=message,
+                title=payload["title"],
+                message=payload["message"],
                 type=NOTIFY_ADMIN,
-                action_url=action_url
+                action_url=payload.get("action_url")
             )
         )
 
-    return created
+    return {
+        "sent": len(created)
+    }
 
 
 # --------------------------------------------------
-# REALTIME HOOK (SUPABASE CHANNEL)
+# REALTIME NOTES
 # --------------------------------------------------
-# NOTE:
 # Supabase Realtime listens automatically to INSERTs on
-# notifications table. Frontend subscribes to:
+# notifications table.
+#
+# Frontend subscribes to:
 # channel: "notifications:user_id"
 #
-# No backend websocket required.
+# No backend websocket needed.
 # --------------------------------------------------
