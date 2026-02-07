@@ -1,42 +1,42 @@
-import random
-from datetime import datetime
-from .supabase_client import db_select, db_insert
+from app.ai.runtime import get_session
+from app.ai.preprocessing import preprocess_image
+from app.ai.postprocessing import postprocess
+from app.supabase_client import supabase
 
-DISEASE_LABELS = [
-    "melanoma",
-    "nevus",
-    "seborrheic_keratosis",
-    "basal_cell_carcinoma",
-    "benign"
-]
+def run_inference(case_id: str):
+    # 1. Fetch case + image
+    case = supabase.table("skin_cases").select("*").eq("id", case_id).single().execute()
+    image_path = case.data["image_url"]
 
-def get_active_model():
-    return db_select(
-        "ai_models",
-        filters={"is_active": True},
-        single=True
-    )
+    # 2. Fetch active model
+    model = (
+        supabase.table("ai_models")
+        .select("*")
+        .eq("is_active", True)
+        .single()
+        .execute()
+    ).data
 
-def predict_and_store(*, case_id: str):
-    model = get_active_model()
-    if not model:
-        raise RuntimeError("No active AI model")
+    model_path = f"app/ai/models/epicheck.onnx"
 
-    predictions = []
+    # 3. Run ONNX
+    session = get_session(model_path)
+    input_tensor = preprocess_image(image_path)
+    outputs = session.run(None, {"input": input_tensor})
 
-    for label in DISEASE_LABELS:
-        confidence = round(random.uniform(0.01, 0.99), 2)
-        predictions.append({
-            "case_id": case_id,
-            "model_id": model["id"],
-            "label": label,
-            "confidence": confidence,
-            "bbox": None,
-            "created_at": datetime.utcnow().isoformat()
-        })
+    result = postprocess(outputs)
 
-    for p in predictions:
-        db_insert("case_predictions", p)
+    # 4. Persist prediction
+    supabase.table("case_predictions").insert({
+        "case_id": case_id,
+        "label": result["label"],
+        "confidence": result["confidence"],
+        "model_id": model["id"]
+    }).execute()
 
-    top = max(predictions, key=lambda x: x["confidence"])
-    return top["label"], top["confidence"], model["id"]
+    # 5. Cache summary on skin_cases
+    supabase.table("skin_cases").update({
+        "ai_primary_label": result["label"],
+        "ai_confidence": result["confidence"],
+        "status": "reviewed"
+    }).eq("id", case_id).execute()

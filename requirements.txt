@@ -7,3 +7,6 @@ pyjwt
 pillow
 httpx
 pydantic
+onnxruntime
+numpy
+opencv-python-headless
