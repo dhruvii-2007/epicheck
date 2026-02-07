@@ -1,71 +1,66 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from .config import API_VERSION
-from .supabase_client import supabase
-from .inference import predict_stub
-from .validators import validate_image
-from .logger import logger
+from .config import API_VERSION, ALLOWED_ORIGINS
 from .auth import get_current_user
+from .doctor import get_current_doctor, get_assigned_cases
+from .validators import validate_image
+from .inference import predict_stub
+from .supabase_client import supabase
+from .logger import logger
 
 load_dotenv()
 
 app = FastAPI(
-    title="Epicheck Backend",
+    title="Epicheck API",
     version=API_VERSION
 )
 
 # ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://your-infinityfree-site.com"
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------- HEALTH CHECK ----------------
+# ---------------- HEALTH ----------------
 @app.get("/health")
-def health_check():
+def health():
     return {"status": "ok"}
 
-# ---------------- PREDICT API ----------------
+# ---------------- USER PREDICT ----------------
 @app.post(f"/{API_VERSION}/predict")
 async def predict(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user)
 ):
-    try:
-        contents = await file.read()
-        validate_image(file, len(contents))
+    contents = await file.read()
+    validate_image(file, len(contents))
 
-        disease, confidence = predict_stub()
+    disease, confidence = predict_stub()
 
-        supabase.table("reports").insert({
-            "user_id": current_user["sub"],
-            "disease": disease,
-            "confidence": confidence
-        }).execute()
+    supabase.table("skin_cases").insert({
+        "user_id": current_user["id"],
+        "ai_primary_label": disease,
+        "ai_confidence": confidence,
+        "status": "submitted"
+    }).execute()
 
-        logger.info(f"Prediction stored for user {current_user['sub']}")
+    logger.info(f"Prediction created for user {current_user['id']}")
 
-        return {
-            "success": True,
-            "disease": disease,
-            "confidence": confidence
-        }
+    return {
+        "success": True,
+        "label": disease,
+        "confidence": confidence
+    }
 
-    except HTTPException as e:
-        raise e
-
-    except Exception as e:
-        logger.error(f"Unhandled error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Internal server error"}
-        )
+# ---------------- DOCTOR CASE LIST ----------------
+@app.get(f"/{API_VERSION}/doctor/cases")
+def doctor_cases(
+    doctor=Depends(get_current_doctor)
+):
+    cases = get_assigned_cases(doctor)
+    return {"cases": cases}
