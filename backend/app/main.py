@@ -1,18 +1,32 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
 from .config import API_VERSION
 from .supabase_client import supabase
 from .inference import predict_stub
 from .validators import validate_image
 from .logger import logger
-from dotenv import load_dotenv
-load_dotenv()
+from .auth import get_current_user
 
+load_dotenv()
 
 app = FastAPI(
     title="Epicheck Backend",
     version=API_VERSION
+)
+
+# ---------------- CORS ----------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "https://your-infinityfree-site.com"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ---------------- HEALTH CHECK ----------------
@@ -24,23 +38,21 @@ def health_check():
 @app.post(f"/{API_VERSION}/predict")
 async def predict(
     file: UploadFile = File(...),
-    user_email: str = Form(...)
+    current_user: dict = Depends(get_current_user)
 ):
     try:
         contents = await file.read()
         validate_image(file, len(contents))
 
-        # AI prediction (stub for now)
         disease, confidence = predict_stub()
 
-        # Insert into Supabase
-        response = supabase.table("reports").insert({
-            "user_email": user_email,
+        supabase.table("reports").insert({
+            "user_id": current_user["sub"],
             "disease": disease,
             "confidence": confidence
         }).execute()
 
-        logger.info(f"Prediction stored for {user_email}")
+        logger.info(f"Prediction stored for user {current_user['sub']}")
 
         return {
             "success": True,

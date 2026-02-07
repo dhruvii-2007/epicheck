@@ -4,3 +4,4 @@ python-multipart
 supabase
 pillow
 python-dotenv
+pyjwt
