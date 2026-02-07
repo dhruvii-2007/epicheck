@@ -13,7 +13,6 @@ from ..supabase_client import (
 from ..config import (
     TICKET_OPEN,
     TICKET_IN_PROGRESS,
-    TICKET_RESOLVED,
     TICKET_CLOSED
 )
 
@@ -25,7 +24,7 @@ router = APIRouter(
 # --------------------------------------------------
 # CREATE TICKET (USER)
 # --------------------------------------------------
-@router.post("")
+@router.post("/")
 def create_ticket(
     subject: str,
     message: str,
@@ -36,7 +35,6 @@ def create_ticket(
         payload={
             "user_id": user["sub"],
             "subject": subject,
-            "message": message,
             "status": TICKET_OPEN,
             "created_at": datetime.utcnow().isoformat()
         }
@@ -54,11 +52,10 @@ def create_ticket(
 
     return {"ticket_id": ticket["id"]}
 
-
 # --------------------------------------------------
 # GET MY TICKETS (USER)
 # --------------------------------------------------
-@router.get("")
+@router.get("/")
 def get_my_tickets(
     user=Depends(require_user)
 ):
@@ -72,7 +69,6 @@ def get_my_tickets(
 
     return {"tickets": tickets}
 
-
 # --------------------------------------------------
 # GET TICKET DETAILS
 # --------------------------------------------------
@@ -83,7 +79,10 @@ def get_ticket(
 ):
     ticket = db_select(
         table="tickets",
-        filters={"id": ticket_id},
+        filters={
+            "id": ticket_id,
+            "deleted_at": None
+        },
         single=True
     )
 
@@ -105,7 +104,6 @@ def get_ticket(
         "ticket": ticket,
         "messages": messages
     }
-
 
 # --------------------------------------------------
 # ADD MESSAGE TO TICKET
@@ -138,16 +136,17 @@ def reply_ticket(
         }
     )
 
-    # Auto-progress status
     if ticket["status"] == TICKET_OPEN:
         db_update(
             table="tickets",
-            payload={"status": TICKET_IN_PROGRESS},
+            payload={
+                "status": TICKET_IN_PROGRESS,
+                "updated_at": datetime.utcnow().isoformat()
+            },
             filters={"id": ticket_id}
         )
 
     return {"sent": True}
-
 
 # --------------------------------------------------
 # ASSIGN TICKET (ADMIN)
@@ -162,13 +161,13 @@ def assign_ticket(
         table="tickets",
         payload={
             "assigned_to": staff_id,
-            "status": TICKET_IN_PROGRESS
+            "status": TICKET_IN_PROGRESS,
+            "updated_at": datetime.utcnow().isoformat()
         },
         filters={"id": ticket_id}
     )
 
     return {"assigned": True}
-
 
 # --------------------------------------------------
 # CLOSE TICKET
@@ -192,7 +191,10 @@ def close_ticket(
 
     db_update(
         table="tickets",
-        payload={"status": TICKET_CLOSED},
+        payload={
+            "status": TICKET_CLOSED,
+            "updated_at": datetime.utcnow().isoformat()
+        },
         filters={"id": ticket_id}
     )
 

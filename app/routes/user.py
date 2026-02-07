@@ -2,28 +2,20 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from datetime import datetime
 
 from ..auth import require_user
-from ..supabase_client import (
-    db_select,
-    db_insert,
-    db_update
-)
+from ..supabase_client import db_select, db_insert, db_update
 from ..validators import validate_image
 from ..inference import predict_stub
 from ..config import (
     CASE_SUBMITTED,
-    AUDIT_AI_PREDICTION,
-    NOTIFY_CASE
+    AUDIT_AI_PREDICTION
 )
 
-router = APIRouter(
-    prefix="/v1/user",
-    tags=["User"]
-)
+router = APIRouter(tags=["User"])
 
 # --------------------------------------------------
 # CREATE SKIN CASE (AI + IMAGE)
 # --------------------------------------------------
-@router.post("/cases")
+@router.post("/user/cases")
 async def create_case(
     file: UploadFile = File(...),
     symptoms: str | None = None,
@@ -32,6 +24,9 @@ async def create_case(
     contents = await file.read()
     validate_image(file, len(contents))
 
+    # TODO: replace with real storage (Supabase Storage / S3)
+    image_url = f"uploads/{user['sub']}/{datetime.utcnow().timestamp()}.jpg"
+
     # AI inference (stub)
     label, confidence = predict_stub()
 
@@ -39,6 +34,7 @@ async def create_case(
         table="skin_cases",
         payload={
             "user_id": user["sub"],
+            "image_url": image_url,
             "symptoms": symptoms,
             "ai_primary_label": label,
             "ai_confidence": confidence,
@@ -47,14 +43,18 @@ async def create_case(
         }
     )
 
-    # Audit log
     db_insert(
         table="audit_logs",
         payload={
             "actor_id": user["sub"],
-            "actor_role": user["role"],
+            "actor_role": "user",
             "action": AUDIT_AI_PREDICTION,
-            "details": {"case_id": case["id"]},
+            "target_table": "skin_cases",
+            "target_id": case["id"],
+            "details": {
+                "label": label,
+                "confidence": confidence
+            },
             "created_at": datetime.utcnow().isoformat()
         }
     )
@@ -69,10 +69,8 @@ async def create_case(
 # --------------------------------------------------
 # GET MY CASES
 # --------------------------------------------------
-@router.get("/cases")
-def get_my_cases(
-    user=Depends(require_user)
-):
+@router.get("/user/cases")
+def get_my_cases(user=Depends(require_user)):
     cases = db_select(
         table="skin_cases",
         filters={
@@ -80,18 +78,14 @@ def get_my_cases(
             "deleted_at": None
         }
     )
-
     return {"cases": cases}
 
 
 # --------------------------------------------------
 # GET SINGLE CASE
 # --------------------------------------------------
-@router.get("/cases/{case_id}")
-def get_case(
-    case_id: str,
-    user=Depends(require_user)
-):
+@router.get("/user/cases/{case_id}")
+def get_case(case_id: str, user=Depends(require_user)):
     case = db_select(
         table="skin_cases",
         filters={"id": case_id},
@@ -124,11 +118,8 @@ def get_case(
 # --------------------------------------------------
 # DELETE (SOFT) CASE
 # --------------------------------------------------
-@router.delete("/cases/{case_id}")
-def delete_case(
-    case_id: str,
-    user=Depends(require_user)
-):
+@router.delete("/user/cases/{case_id}")
+def delete_case(case_id: str, user=Depends(require_user)):
     case = db_select(
         table="skin_cases",
         filters={"id": case_id},
@@ -143,9 +134,7 @@ def delete_case(
 
     db_update(
         table="skin_cases",
-        payload={
-            "deleted_at": datetime.utcnow().isoformat()
-        },
+        payload={"deleted_at": datetime.utcnow().isoformat()},
         filters={"id": case_id}
     )
 
@@ -155,7 +144,7 @@ def delete_case(
 # --------------------------------------------------
 # USER CONSENT
 # --------------------------------------------------
-@router.post("/consent")
+@router.post("/user/consent")
 def give_consent(
     consent_type: str,
     consent_version: str,
@@ -170,37 +159,4 @@ def give_consent(
             "accepted_at": datetime.utcnow().isoformat()
         }
     )
-
     return {"consent_saved": True}
-
-
-# --------------------------------------------------
-# NOTIFICATIONS
-# --------------------------------------------------
-@router.get("/notifications")
-def get_notifications(
-    user=Depends(require_user)
-):
-    notifications = db_select(
-        table="notifications",
-        filters={"user_id": user["sub"]}
-    )
-
-    return {"notifications": notifications}
-
-
-@router.post("/notifications/{notification_id}/read")
-def mark_notification_read(
-    notification_id: str,
-    user=Depends(require_user)
-):
-    db_update(
-        table="notifications",
-        payload={"is_read": True},
-        filters={
-            "id": notification_id,
-            "user_id": user["sub"]
-        }
-    )
-
-    return {"read": True}

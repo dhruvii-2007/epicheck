@@ -2,11 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from datetime import datetime
 
 from ..auth import require_admin
-from ..supabase_client import (
-    db_select,
-    db_insert,
-    db_update
-)
+from ..supabase_client import db_select, db_insert, db_update
 from ..config import (
     STATUS_APPROVED,
     STATUS_REJECTED,
@@ -15,10 +11,7 @@ from ..config import (
     AUDIT_SUSPEND_USER
 )
 
-router = APIRouter(
-    prefix="/v1/admin",
-    tags=["Admin"]
-)
+router = APIRouter(tags=["Admin"])
 
 # --------------------------------------------------
 # APPROVE DOCTOR
@@ -34,12 +27,15 @@ def approve_doctor(
         single=True
     )
 
-    if not profile:
+    if not profile or profile["role"] != "doctor":
         raise HTTPException(status_code=404, detail="Doctor not found")
 
     db_update(
         table="profiles",
-        payload={"status": STATUS_APPROVED},
+        payload={
+            "status": STATUS_APPROVED,
+            "approved_at": datetime.utcnow().isoformat()
+        },
         filters={"id": doctor_id}
     )
 
@@ -49,7 +45,9 @@ def approve_doctor(
             "actor_id": admin["sub"],
             "actor_role": "admin",
             "action": AUDIT_APPROVE_DOCTOR,
-            "details": {"doctor_id": doctor_id},
+            "target_table": "profiles",
+            "target_id": doctor_id,
+            "details": None,
             "created_at": datetime.utcnow().isoformat()
         }
     )
@@ -58,7 +56,7 @@ def approve_doctor(
 
 
 # --------------------------------------------------
-# REVOKE / REJECT DOCTOR
+# REJECT / REVOKE DOCTOR
 # --------------------------------------------------
 @router.post("/revoke-doctor/{doctor_id}")
 def revoke_doctor(
@@ -72,7 +70,7 @@ def revoke_doctor(
         single=True
     )
 
-    if not profile:
+    if not profile or profile["role"] != "doctor":
         raise HTTPException(status_code=404, detail="Doctor not found")
 
     db_update(
@@ -90,10 +88,9 @@ def revoke_doctor(
             "actor_id": admin["sub"],
             "actor_role": "admin",
             "action": AUDIT_REVOKE_DOCTOR,
-            "details": {
-                "doctor_id": doctor_id,
-                "reason": reason
-            },
+            "target_table": "profiles",
+            "target_id": doctor_id,
+            "details": {"reason": reason},
             "created_at": datetime.utcnow().isoformat()
         }
     )
@@ -135,10 +132,9 @@ def suspend_user(
             "actor_id": admin["sub"],
             "actor_role": "admin",
             "action": AUDIT_SUSPEND_USER,
-            "details": {
-                "user_id": user_id,
-                "reason": reason
-            },
+            "target_table": "profiles",
+            "target_id": user_id,
+            "details": {"reason": reason},
             "created_at": datetime.utcnow().isoformat()
         }
     )
@@ -154,11 +150,8 @@ def get_audit_logs(
     limit: int = Query(50, ge=1, le=200),
     admin=Depends(require_admin)
 ):
-    logs = (
-        db_select("audit_logs")
-    )[:limit]
-
-    return {"logs": logs}
+    logs = list(db_select("audit_logs"))
+    return {"logs": logs[:limit]}
 
 
 # --------------------------------------------------
@@ -169,22 +162,13 @@ def get_request_logs(
     limit: int = Query(50, ge=1, le=200),
     admin=Depends(require_admin)
 ):
-    logs = (
-        db_select("request_logs")
-    )[:limit]
-
-    return {"logs": logs}
+    logs = list(db_select("request_logs"))
+    return {"logs": logs[:limit]}
 
 
 # --------------------------------------------------
-# FEATURE FLAGS
+# FEATURE FLAGS (ADMIN WRITE)
 # --------------------------------------------------
-@router.get("/feature-flags")
-def list_feature_flags(admin=Depends(require_admin)):
-    flags = db_select("feature_flags")
-    return {"flags": flags}
-
-
 @router.post("/feature-flags/{key}")
 def update_feature_flag(
     key: str,

@@ -1,4 +1,5 @@
 from fastapi import HTTPException
+from datetime import datetime
 
 from ..supabase_client import (
     db_select,
@@ -9,22 +10,13 @@ from ..supabase_client import (
 # --------------------------------------------------
 # GET ALL FEATURE FLAGS
 # --------------------------------------------------
-
 def get_all_feature_flags():
-    """
-    Returns all feature flags.
-    """
     return db_select(table="feature_flags")
-
 
 # --------------------------------------------------
 # GET SINGLE FEATURE FLAG
 # --------------------------------------------------
-
 def get_feature_flag(key: str):
-    """
-    Returns a single feature flag.
-    """
     flag = db_select(
         table="feature_flags",
         filters={"key": key},
@@ -36,42 +28,27 @@ def get_feature_flag(key: str):
 
     return flag
 
-
 # --------------------------------------------------
-# CHECK FEATURE ENABLED
+# CHECK FEATURE ENABLED (RUNTIME USE)
 # --------------------------------------------------
-
 def is_feature_enabled(key: str) -> bool:
-    """
-    Returns True if feature flag exists and is enabled.
-    Defaults to False if missing.
-    """
     flag = db_select(
         table="feature_flags",
         filters={"key": key},
         single=True
     )
 
-    if not flag:
-        return False
-
-    return bool(flag.get("enabled"))
-
+    return bool(flag and flag.get("enabled"))
 
 # --------------------------------------------------
-# CREATE FEATURE FLAG (ADMIN)
+# CREATE FEATURE FLAG (ADMIN SERVICE)
 # --------------------------------------------------
-
 def create_feature_flag(
     *,
     key: str,
     enabled: bool = False,
     description: str | None = None
 ):
-    """
-    Creates a new feature flag.
-    """
-
     existing = db_select(
         table="feature_flags",
         filters={"key": key},
@@ -89,26 +66,23 @@ def create_feature_flag(
         payload={
             "key": key,
             "enabled": enabled,
-            "description": description
+            "description": description,
+            "created_at": datetime.utcnow().isoformat()
         }
     )
 
-
 # --------------------------------------------------
-# UPDATE FEATURE FLAG (ADMIN)
+# UPDATE FEATURE FLAG (ADMIN SERVICE)
 # --------------------------------------------------
-
 def update_feature_flag(
     *,
     key: str,
     enabled: bool | None = None,
     description: str | None = None
 ):
-    """
-    Updates an existing feature flag.
-    """
-
-    payload = {}
+    payload = {
+        "updated_at": datetime.utcnow().isoformat()
+    }
 
     if enabled is not None:
         payload["enabled"] = enabled
@@ -116,7 +90,7 @@ def update_feature_flag(
     if description is not None:
         payload["description"] = description
 
-    if not payload:
+    if len(payload) == 1:
         raise HTTPException(
             status_code=400,
             detail="Nothing to update"

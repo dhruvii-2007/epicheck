@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer
 from dotenv import load_dotenv
+from datetime import datetime
 import time
 
 from app.config import API_VERSION
@@ -29,10 +29,8 @@ app = FastAPI(
     description="Epicheck backend — secure, audited medical AI platform"
 )
 
-security = HTTPBearer()
-
 # --------------------------------------------------
-# CORS (LOCKED TO FRONTEND)
+# CORS
 # --------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -41,7 +39,7 @@ app.add_middleware(
         "https://epicheck.great-site.net"
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -58,20 +56,21 @@ def startup():
 # --------------------------------------------------
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
-    start_time = time.time()
+    start = time.time()
     response = await call_next(request)
-    duration = round(time.time() - start_time, 3)
+    duration = round(time.time() - start, 3)
 
     try:
         from app.supabase_client import db_insert
 
         db_insert(
-            "request_logs",
-            {
+            table="request_logs",
+            payload={
                 "endpoint": request.url.path,
                 "method": request.method,
                 "status_code": response.status_code,
-                "ip_address": request.client.host if request.client else None
+                "ip_address": request.client.host if request.client else None,
+                "created_at": datetime.utcnow().isoformat()
             }
         )
     except Exception as e:
@@ -92,42 +91,36 @@ def health():
     return {"status": "ok"}
 
 # --------------------------------------------------
-# ROUTERS
+# ROUTERS (NO DOUBLE PREFIXES)
 # --------------------------------------------------
 app.include_router(
     user_router,
-    prefix=f"/{API_VERSION}",
-    tags=["User"]
+    prefix=f"/{API_VERSION}"
 )
 
 app.include_router(
     doctor_router,
-    prefix=f"/{API_VERSION}/doctor",
-    tags=["Doctor"]
+    prefix=f"/{API_VERSION}"
 )
 
 app.include_router(
     admin_router,
-    prefix=f"/{API_VERSION}/admin",
-    tags=["Admin"]
+    prefix=f"/{API_VERSION}"
 )
 
 app.include_router(
     tickets_router,
-    prefix=f"/{API_VERSION}/tickets",
-    tags=["Support"]
+    prefix=f"/{API_VERSION}"
 )
 
 app.include_router(
     notifications_router,
-    prefix=f"/{API_VERSION}/notifications",
-    tags=["Notifications"]
+    prefix=f"/{API_VERSION}"
 )
 
 app.include_router(
     feature_flags_router,
-    prefix=f"/{API_VERSION}/features",
-    tags=["Feature Flags"]
+    prefix=f"/{API_VERSION}"
 )
 
 # --------------------------------------------------
