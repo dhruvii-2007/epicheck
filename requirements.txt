@@ -5,3 +5,5 @@ python-multipart
 supabase
 pyjwt
 pillow
+httpx
+pydantic

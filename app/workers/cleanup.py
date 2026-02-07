@@ -1,7 +1,9 @@
 import datetime
+
 from app.supabase_client import (
     db_select,
-    db_update
+    db_update,
+    db_insert
 )
 from app.logger import logger
 
@@ -10,7 +12,7 @@ from app.logger import logger
 # --------------------------------------------------
 
 MAX_RETRIES = 3
-
+JOB_NAME = "cleanup_case_files"
 
 # --------------------------------------------------
 # CLEANUP JOB
@@ -19,21 +21,25 @@ MAX_RETRIES = 3
 def cleanup_case_files():
     """
     Cleans up case_files marked for deletion.
-    Updates:
-    - storage_cleaned
-    - cleanup_attempts
-    - cleanup_failed
-    - deleted_at
+
+    DB effects:
+    - storage_cleaned = true
+    - cleanup_attempts incremented
+    - cleanup_failed set after max retries
+    - deleted_at set
+    - audit_logs entry created
+    - cron_health updated (UPSERT-safe)
     """
 
-    job_started_at = datetime.datetime.utcnow()
+    job_started_at = datetime.datetime.utcnow().isoformat()
 
     try:
         files = db_select(
             table="case_files",
             filters={
                 "marked_for_deletion": True,
-                "storage_cleaned": False
+                "storage_cleaned": False,
+                "cleanup_failed": False
             }
         )
 
@@ -41,6 +47,9 @@ def cleanup_case_files():
             file_id = file["id"]
             attempts = file.get("cleanup_attempts", 0)
 
+            # -----------------------------------------
+            # MAX RETRIES REACHED
+            # -----------------------------------------
             if attempts >= MAX_RETRIES:
                 db_update(
                     table="case_files",
@@ -53,18 +62,35 @@ def cleanup_case_files():
 
             try:
                 # -----------------------------------------
-                # STORAGE DELETE (SUPABASE HANDLED SEPARATELY)
+                # STORAGE DELETE
                 # -----------------------------------------
-                # We assume Supabase storage lifecycle / webhook
-                # handles actual file deletion.
+                # Actual file deletion handled by Supabase
+                # storage lifecycle / webhook
 
                 db_update(
                     table="case_files",
                     payload={
                         "storage_cleaned": True,
-                        "deleted_at": job_started_at.isoformat()
+                        "cleanup_attempts": attempts + 1,
+                        "deleted_at": job_started_at
                     },
                     filters={"id": file_id}
+                )
+
+                # -----------------------------------------
+                # AUDIT LOG
+                # -----------------------------------------
+                db_insert(
+                    table="audit_logs",
+                    payload={
+                        "actor_id": None,
+                        "actor_role": "system",
+                        "action": "CLEANUP_CASE_FILE",
+                        "details": {
+                            "file_id": file_id
+                        },
+                        "created_at": job_started_at
+                    }
                 )
 
             except Exception as file_error:
@@ -79,31 +105,64 @@ def cleanup_case_files():
                 )
 
         # --------------------------------------------------
-        # CRON HEALTH SUCCESS
+        # CRON HEALTH — SUCCESS (UPSERT SAFE)
         # --------------------------------------------------
-
-        db_update(
+        existing = db_select(
             table="cron_health",
-            payload={
-                "job_name": "cleanup_case_files",
-                "status": "success",
-                "ran_at": job_started_at.isoformat()
-            },
-            filters={}
+            filters={"job_name": JOB_NAME},
+            single=True
         )
+
+        if existing:
+            db_update(
+                table="cron_health",
+                payload={
+                    "status": "success",
+                    "ran_at": job_started_at
+                },
+                filters={"job_name": JOB_NAME}
+            )
+        else:
+            db_insert(
+                table="cron_health",
+                payload={
+                    "job_name": JOB_NAME,
+                    "status": "success",
+                    "ran_at": job_started_at
+                }
+            )
 
         logger.info("Cleanup job completed successfully")
 
     except Exception as e:
         logger.critical(f"Cleanup job crashed: {e}")
 
-        db_update(
+        # --------------------------------------------------
+        # CRON HEALTH — FAILED (UPSERT SAFE)
+        # --------------------------------------------------
+        existing = db_select(
             table="cron_health",
-            payload={
-                "job_name": "cleanup_case_files",
-                "status": "failed",
-                "error": str(e),
-                "ran_at": job_started_at.isoformat()
-            },
-            filters={}
+            filters={"job_name": JOB_NAME},
+            single=True
         )
+
+        if existing:
+            db_update(
+                table="cron_health",
+                payload={
+                    "status": "failed",
+                    "error": str(e),
+                    "ran_at": job_started_at
+                },
+                filters={"job_name": JOB_NAME}
+            )
+        else:
+            db_insert(
+                table="cron_health",
+                payload={
+                    "job_name": JOB_NAME,
+                    "status": "failed",
+                    "error": str(e),
+                    "ran_at": job_started_at
+                }
+            )

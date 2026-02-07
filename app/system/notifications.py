@@ -13,12 +13,13 @@ from app.config import (
 )
 from app.auth import require_user, require_admin
 
-router = APIRouter()
+router = APIRouter(
+    tags=["Notifications"]
+)
 
 # --------------------------------------------------
 # INTERNAL HELPERS
 # --------------------------------------------------
-
 def create_notification(
     *,
     user_id: str,
@@ -40,7 +41,6 @@ def create_notification(
         }
     )
 
-
 # --------------------------------------------------
 # USER: GET MY NOTIFICATIONS
 # --------------------------------------------------
@@ -48,10 +48,9 @@ def create_notification(
 def get_my_notifications(user=Depends(require_user)):
     return db_select(
         table="notifications",
-        filters={"user_id": user["id"]},
+        filters={"user_id": user["sub"]},
         order="created_at.desc"
     )
-
 
 # --------------------------------------------------
 # USER: MARK AS READ
@@ -70,7 +69,7 @@ def mark_notification_read(
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
 
-    if notification["user_id"] != user["id"]:
+    if notification["user_id"] != user["sub"]:
         raise HTTPException(status_code=403, detail="Forbidden")
 
     db_update(
@@ -81,7 +80,6 @@ def mark_notification_read(
 
     return {"read": True}
 
-
 # --------------------------------------------------
 # ADMIN: BROADCAST SYSTEM NOTIFICATION
 # --------------------------------------------------
@@ -90,15 +88,6 @@ def broadcast_system_notification(
     payload: dict,
     admin=Depends(require_admin)
 ):
-    """
-    payload = {
-        "user_ids": [...],
-        "title": "...",
-        "message": "...",
-        "action_url": "optional"
-    }
-    """
-
     created = []
 
     for uid in payload["user_ids"]:
@@ -112,19 +101,19 @@ def broadcast_system_notification(
             )
         )
 
-    return {
-        "sent": len(created)
-    }
+    # Audit log
+    db_insert(
+        table="audit_logs",
+        payload={
+            "actor_id": admin["sub"],
+            "actor_role": "admin",
+            "action": "ADMIN_BROADCAST_NOTIFICATION",
+            "details": {
+                "user_count": len(payload["user_ids"]),
+                "title": payload["title"]
+            },
+            "created_at": datetime.utcnow().isoformat()
+        }
+    )
 
-
-# --------------------------------------------------
-# REALTIME NOTES
-# --------------------------------------------------
-# Supabase Realtime listens automatically to INSERTs on
-# notifications table.
-#
-# Frontend subscribes to:
-# channel: "notifications:user_id"
-#
-# No backend websocket needed.
-# --------------------------------------------------
+    return {"sent": len(created)}
