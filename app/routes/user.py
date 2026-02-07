@@ -4,7 +4,7 @@ from datetime import datetime
 from ..auth import require_user
 from ..supabase_client import db_select, db_insert, db_update
 from ..validators import validate_image
-from ..inference import predict_stub
+from ..inference import predict_image
 from ..config import (
     CASE_SUBMITTED,
     AUDIT_AI_PREDICTION
