@@ -1,56 +1,82 @@
+# app/logger.py
+
 import logging
-import sys
-from datetime import datetime
+import os
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
-from app.supabase_client import db_insert
+from app.supabase_client import supabase
 
 # --------------------------------------------------
-# BASE LOGGER CONFIG
+# PYTHON LOGGER (stdout / Render)
 # --------------------------------------------------
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 
 logger = logging.getLogger("epicheck")
-logger.setLevel(logging.INFO)
-
-handler = logging.StreamHandler(sys.stdout)
-formatter = logging.Formatter(
-    "[%(asctime)s] [%(levelname)s] %(message)s"
-)
-handler.setFormatter(formatter)
-
-if not logger.handlers:
-    logger.addHandler(handler)
 
 # --------------------------------------------------
-# AUDIT LOG (USED BY ROUTERS)
+# REQUEST LOGGING (request_logs table)
+# --------------------------------------------------
+
+def request_log(
+    *,
+    user_id: Optional[str],
+    ip_address: Optional[str],
+    endpoint: str,
+    method: str,
+    status_code: int,
+):
+    """
+    Logs every API request.
+    Matches `request_logs` table exactly.
+    """
+    try:
+        supabase.table("request_logs").insert({
+            "user_id": user_id,
+            "ip_address": ip_address,
+            "endpoint": endpoint,
+            "method": method,
+            "status_code": status_code,
+            "created_at": datetime.now(timezone.utc),
+        }).execute()
+
+    except Exception as e:
+        # Never break API due to logging failure
+        logger.warning(f"Request log failed: {e}")
+
+# --------------------------------------------------
+# AUDIT LOGGING (audit_logs table)
 # --------------------------------------------------
 
 def audit_log(
     *,
+    table_name: str,
+    record_id: str,
     action: str,
-    entity: str,
-    entity_id: Optional[str] = None,
-    performed_by: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None
+    actor_id: Optional[str],
+    old_data: Optional[Dict[str, Any]] = None,
+    new_data: Optional[Dict[str, Any]] = None,
 ):
     """
-    Writes an audit event to Supabase.
-    This function MUST exist — routers depend on it.
+    Application-level audit logs.
+    Complements DB triggers.
     """
-
-    payload = {
-        "action": action,
-        "entity": entity,
-        "entity_id": entity_id,
-        "performed_by": performed_by,
-        "metadata": metadata or {},
-        "created_at": datetime.utcnow().isoformat()
-    }
-
     try:
-        db_insert("audit_logs", payload)
-        logger.info(
-            f"AUDIT | {action} | {entity} | id={entity_id} | by={performed_by}"
-        )
+        supabase.table("audit_logs").insert({
+            "table_name": table_name,
+            "record_id": record_id,
+            "action": action,
+            "actor_id": actor_id,
+            "old_data": old_data,
+            "new_data": new_data,
+            "created_at": datetime.now(timezone.utc),
+        }).execute()
+
     except Exception as e:
-        logger.error(f"Failed to write audit log: {e}", exc_info=True)
+        logger.warning(f"Audit log failed: {e}")
