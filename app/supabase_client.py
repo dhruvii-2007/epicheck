@@ -1,9 +1,9 @@
 # app/supabase_client.py
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from supabase import create_client, Client
-from app.logger import logger
+from app.core_logger import logger   # ✅ FIXED (no circular import)
 
 # --------------------------------------------------
 # SUPABASE CLIENT INIT
@@ -64,9 +64,9 @@ def db_select(
 
         return response.data
 
-    except Exception as e:
+    except Exception:
         logger.exception(f"DB SELECT failed on {table}")
-        raise e
+        raise
 
 # --------------------------------------------------
 # INSERT
@@ -91,14 +91,11 @@ def db_insert(
         if response.error:
             raise RuntimeError(response.error.message)
 
-        if return_single:
-            return response.data[0]
+        return response.data[0] if return_single else response.data
 
-        return response.data
-
-    except Exception as e:
+    except Exception:
         logger.exception(f"DB INSERT failed on {table}")
-        raise e
+        raise
 
 # --------------------------------------------------
 # UPDATE
@@ -128,9 +125,9 @@ def db_update(
 
         return response.data
 
-    except Exception as e:
+    except Exception:
         logger.exception(f"DB UPDATE failed on {table}")
-        raise e
+        raise
 
 # --------------------------------------------------
 # SOFT DELETE

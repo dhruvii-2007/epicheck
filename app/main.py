@@ -2,8 +2,9 @@
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from uuid import UUID
-from app.logger import logger, request_log
+
+from app.core_logger import logger          # ✅ raw logger
+from app.logger import request_log          # ✅ helper only
 from app.routers import cases, auth, doctors, notifications, tickets
 
 # --------------------------------------------------
@@ -21,7 +22,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # tighten in prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,12 +37,9 @@ async def log_requests(request: Request, call_next):
     response: Response = await call_next(request)
 
     try:
-        user_id = request.headers.get("x-user-id")
-        ip_address = request.client.host if request.client else None
-
         request_log(
-            user_id=user_id,
-            ip_address=ip_address,
+            user_id=request.headers.get("x-user-id"),
+            ip_address=request.client.host if request.client else None,
             endpoint=request.url.path,
             method=request.method,
             status_code=response.status_code,
@@ -65,6 +63,7 @@ app.include_router(tickets.router, prefix="/tickets", tags=["tickets"])
 # HEALTH CHECK
 # --------------------------------------------------
 
-@app.get("/health")
+@app.get("/health", tags=["system"])
 def health():
+    logger.info("Health check OK")
     return {"status": "ok"}
