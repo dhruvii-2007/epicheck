@@ -51,14 +51,30 @@ def submit_verification(
     if upload_resp.get("error"):
         raise HTTPException(status_code=500, detail="Document upload failed")
 
-    document_url = supabase.storage.from_("documents").get_public_url(storage_path)
-
     supabase.table("doctor_verifications").insert({
         "doctor_id": profile["id"],
         "verification_status": "pending",
-        "document_url": document_url,
+        "document_path": storage_path,
         "submitted_at": datetime.utcnow().isoformat()
     }).execute()
+
+    # notify admins
+    admins = (
+        supabase
+        .table("profiles")
+        .select("id")
+        .eq("role", "admin")
+        .execute()
+    )
+
+    for admin in admins.data or []:
+        create_notification(
+            user_id=admin["id"],
+            title="Doctor verification pending",
+            message="A doctor has submitted verification documents.",
+            notif_type="system",
+            action_url="/admin/doctors"
+        )
 
     log_audit_event(
         actor_id=profile["id"],
@@ -106,6 +122,23 @@ def assign_case(
     if not doctor_id:
         raise HTTPException(status_code=400, detail="doctor_id required")
 
+    # verify case exists and open
+    case_resp = (
+        supabase
+        .table("skin_cases")
+        .select("id, status")
+        .eq("id", case_id)
+        .is_("deleted_at", None)
+        .limit(1)
+        .execute()
+    )
+
+    if not case_resp.data:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if case_resp.data[0]["status"] in ["closed"]:
+        raise HTTPException(status_code=400, detail="Case already closed")
+
     # verify doctor
     doc_resp = (
         supabase
@@ -120,25 +153,22 @@ def assign_case(
     if not doc_resp.data:
         raise HTTPException(status_code=404, detail="Doctor not found or not approved")
 
-    # prevent duplicate assignment
-    existing = (
+    # atomic assignment
+    assign_resp = (
         supabase
         .table("case_assignments")
-        .select("id")
-        .eq("case_id", case_id)
+        .insert({
+            "case_id": case_id,
+            "doctor_id": doctor_id,
+            "assigned_by": admin["id"],
+            "reason": payload.get("reason"),
+            "created_at": datetime.utcnow().isoformat()
+        })
         .execute()
     )
 
-    if existing.data:
-        raise HTTPException(status_code=400, detail="Case already assigned")
-
-    supabase.table("case_assignments").insert({
-        "case_id": case_id,
-        "doctor_id": doctor_id,
-        "assigned_by": admin["id"],
-        "reason": payload.get("reason"),
-        "created_at": datetime.utcnow().isoformat()
-    }).execute()
+    if not assign_resp.data:
+        raise HTTPException(status_code=409, detail="Case already assigned")
 
     supabase.table("skin_cases").update({
         "assigned_doctor": doctor_id,
@@ -189,6 +219,8 @@ def review_case(
         .select("*")
         .eq("id", case_id)
         .eq("assigned_doctor", doctor["id"])
+        .is_("deleted_at", None)
+        .limit(1)
         .execute()
     )
 
@@ -196,6 +228,9 @@ def review_case(
         raise HTTPException(status_code=403, detail="Case not assigned to you")
 
     case = case_resp.data[0]
+
+    if case["status"] not in ["reviewed"]:
+        raise HTTPException(status_code=400, detail="Case not ready for review")
 
     # prevent duplicate review
     existing = (
@@ -222,6 +257,8 @@ def review_case(
 
     supabase.table("skin_cases").update({
         "reviewed": True,
+        "reviewed_at": datetime.utcnow().isoformat(),
+        "reviewed_by": doctor["id"],
         "status": update_status,
         "updated_at": datetime.utcnow().isoformat()
     }).eq("id", case_id).execute()

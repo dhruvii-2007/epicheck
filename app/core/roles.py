@@ -1,47 +1,55 @@
 from fastapi import Depends, HTTPException, Request
+from app.core.dependencies import get_current_user
 
-# --------------------------------------------------
-# Core role guard
-# --------------------------------------------------
 
 def require_role(allowed_roles: list[str]):
     """
-    Generic role-based access control.
-    Expects request.state.user to be populated by auth middleware.
+    Generic role guard.
+    Must be used AFTER get_current_user has populated request.state.profile
     """
-    def checker(request: Request):
-        user = getattr(request.state, "user", None)
+    def checker(
+        request: Request,
+        profile=Depends(get_current_user)
+    ):
+        role = profile.get("role")
 
-        if not user:
-            raise HTTPException(status_code=401, detail="Unauthorized")
+        if role not in allowed_roles:
+            raise HTTPException(
+                status_code=403,
+                detail="Insufficient permissions"
+            )
 
-        if user.get("role") not in allowed_roles:
-            raise HTTPException(status_code=403, detail="Forbidden")
-
-        return user
+        return profile
 
     return checker
 
 
 # --------------------------------------------------
-# Specific role guards
+# Role-specific guards
 # --------------------------------------------------
 
-def require_admin(user=Depends(require_role(["admin"]))):
-    return user
+def require_user(profile=Depends(require_role(["user"]))):
+    return profile
 
 
-def require_support(user=Depends(require_role(["support", "admin"]))):
-    return user
-
-
-def require_doctor(user=Depends(require_role(["doctor", "admin"]))):
-    """
-    Doctor must be verified unless admin.
-    """
-    if user["role"] == "doctor" and user.get("verification_status") != "approved":
+def require_doctor(profile=Depends(require_role(["doctor"]))):
+    if profile.get("status") != "approved":
         raise HTTPException(
             status_code=403,
             detail="Doctor not verified"
         )
-    return user
+    return profile
+
+
+def require_support(profile=Depends(require_role(["support"]))):
+    return profile
+
+
+def require_admin(profile=Depends(require_role(["admin"]))):
+    return profile
+
+
+def require_support_or_admin(
+    profile=Depends(require_role(["support", "admin"]))
+):
+    return profile

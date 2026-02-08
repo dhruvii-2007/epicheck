@@ -14,12 +14,9 @@ router = APIRouter(prefix="/cases", tags=["AI"])
 # TRIGGER AI ANALYSIS
 # --------------------------------------------------
 @router.post("/{case_id}/analyze")
-def analyze_case(
-    case_id: str,
-    profile=Depends(get_current_user)
-):
+def analyze_case(case_id: str, profile=Depends(get_current_user)):
     """
-    Run AI inference on a case
+    Run AI inference on a case (idempotent, locked)
     """
 
     # --------------------------------------------------
@@ -28,9 +25,7 @@ def analyze_case(
     case_resp = (
         supabase
         .table("skin_cases")
-        .select(
-            "id, status, user_id"
-        )
+        .select("id, status, user_id")
         .eq("id", case_id)
         .eq("user_id", profile["id"])
         .is_("deleted_at", None)
@@ -50,7 +45,28 @@ def analyze_case(
         )
 
     # --------------------------------------------------
-    # Fetch case image (private storage path)
+    # Atomic lock (prevent double run)
+    # --------------------------------------------------
+    lock_resp = (
+        supabase
+        .table("skin_cases")
+        .update({
+            "status": "processing",
+            "updated_at": datetime.utcnow().isoformat()
+        })
+        .eq("id", case_id)
+        .eq("status", "submitted")
+        .execute()
+    )
+
+    if not lock_resp.data:
+        raise HTTPException(
+            status_code=409,
+            detail="Case is already being processed"
+        )
+
+    # --------------------------------------------------
+    # Fetch case image
     # --------------------------------------------------
     file_resp = (
         supabase
@@ -63,17 +79,13 @@ def analyze_case(
     )
 
     if not file_resp.data:
+        supabase.table("skin_cases").update({
+            "status": "submitted"
+        }).eq("id", case_id).execute()
+
         raise HTTPException(status_code=400, detail="No case image uploaded")
 
     storage_path = file_resp.data[0]["storage_path"]
-
-    # --------------------------------------------------
-    # Lock case
-    # --------------------------------------------------
-    supabase.table("skin_cases").update({
-        "status": "processing",
-        "updated_at": datetime.utcnow().isoformat()
-    }).eq("id", case_id).execute()
 
     # --------------------------------------------------
     # Load active AI model
@@ -81,7 +93,7 @@ def analyze_case(
     model_resp = (
         supabase
         .table("ai_models")
-        .select("id, name, version")
+        .select("id, name, version, framework")
         .eq("is_active", True)
         .limit(1)
         .execute()
@@ -97,7 +109,7 @@ def analyze_case(
     model = model_resp.data[0]
 
     # --------------------------------------------------
-    # Run inference (guarded)
+    # Run inference
     # --------------------------------------------------
     try:
         result = run_inference(storage_path)
@@ -106,7 +118,22 @@ def analyze_case(
             "status": "submitted"
         }).eq("id", case_id).execute()
 
+        log_audit_event(
+            actor_id=profile["id"],
+            action="ai_analysis_failed",
+            target_table="skin_cases",
+            target_id=case_id,
+            metadata={"error": str(e)}
+        )
+
         raise HTTPException(status_code=500, detail="AI inference failed")
+
+    # --------------------------------------------------
+    # Validate result
+    # --------------------------------------------------
+    confidence = float(result["confidence"])
+    if confidence < 0 or confidence > 1:
+        raise HTTPException(status_code=500, detail="Invalid AI confidence score")
 
     # --------------------------------------------------
     # Store prediction
@@ -114,9 +141,12 @@ def analyze_case(
     supabase.table("case_predictions").insert({
         "case_id": case_id,
         "model_id": model["id"],
+        "model_name": model["name"],
+        "model_version": model["version"],
+        "framework": model.get("framework"),
         "primary_label": result["primary_label"],
         "secondary_labels": result.get("secondary_labels"),
-        "confidence": result["confidence"],
+        "confidence": confidence,
         "severity_score": result.get("severity_score"),
         "risk_level": result.get("risk_level"),
         "created_at": datetime.utcnow().isoformat()
@@ -128,7 +158,7 @@ def analyze_case(
     supabase.table("skin_cases").update({
         "ai_primary_label": result["primary_label"],
         "ai_secondary_labels": result.get("secondary_labels"),
-        "ai_confidence": result["confidence"],
+        "ai_confidence": confidence,
         "severity_score": result.get("severity_score"),
         "risk_level": result.get("risk_level"),
         "status": "reviewed",
@@ -145,6 +175,7 @@ def analyze_case(
         target_id=case_id,
         metadata={
             "model_id": model["id"],
+            "model_name": model["name"],
             "model_version": model["version"]
         }
     )
@@ -153,7 +184,7 @@ def analyze_case(
         user_id=profile["id"],
         title="AI analysis completed",
         message="Your skin case has been analyzed by our AI system.",
-        notif_type="ai_completed",
+        notif_type="system",
         action_url=f"/cases/{case_id}"
     )
 
@@ -167,14 +198,7 @@ def analyze_case(
 # GET CASE PREDICTIONS
 # --------------------------------------------------
 @router.get("/{case_id}/predictions")
-def get_case_predictions(
-    case_id: str,
-    profile=Depends(get_current_user)
-):
-    """
-    Return all AI predictions for a case
-    """
-
+def get_case_predictions(case_id: str, profile=Depends(get_current_user)):
     case_resp = (
         supabase
         .table("skin_cases")

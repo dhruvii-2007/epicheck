@@ -26,16 +26,16 @@ def create_ticket(
     message = payload.get("message")
 
     if not subject or not message:
-        raise HTTPException(
-            status_code=400,
-            detail="subject and message required"
-        )
+        raise HTTPException(status_code=400, detail="subject and message required")
+
+    now = datetime.utcnow().isoformat()
 
     resp = supabase.table("tickets").insert({
         "user_id": profile["id"],
         "subject": subject,
         "status": "open",
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": now,
+        "updated_at": now
     }).execute()
 
     if not resp.data:
@@ -48,8 +48,26 @@ def create_ticket(
         "ticket_id": ticket["id"],
         "sender_id": profile["id"],
         "message": message,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": now
     }).execute()
+
+    # notify support + admins
+    staff = (
+        supabase
+        .table("profiles")
+        .select("id")
+        .in_("role", ["support", "admin"])
+        .execute()
+    )
+
+    for user in staff.data or []:
+        create_notification(
+            user_id=user["id"],
+            title="New support ticket",
+            message=f"New ticket: {subject}",
+            notif_type="ticket_new",
+            action_url=f"/admin/tickets/{ticket['id']}"
+        )
 
     log_audit_event(
         actor_id=profile["id"],
@@ -75,9 +93,7 @@ def list_tickets(
     Support/Admin: all tickets
     """
 
-    if limit > 50:
-        limit = 50
-
+    limit = min(limit, 50)
     offset = (page - 1) * limit
 
     query = (
@@ -92,7 +108,7 @@ def list_tickets(
 
     resp = (
         query
-        .order("created_at", desc=True)
+        .order("updated_at", desc=True)
         .range(offset, offset + limit - 1)
         .execute()
     )
@@ -133,8 +149,6 @@ def get_ticket(
     if not ticket_resp.data:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    ticket = ticket_resp.data[0]
-
     messages = (
         supabase
         .table("ticket_messages")
@@ -146,7 +160,7 @@ def get_ticket(
     ).data or []
 
     return {
-        "ticket": ticket,
+        "ticket": ticket_resp.data[0],
         "messages": messages
     }
 
@@ -186,12 +200,21 @@ def add_ticket_message(
 
     ticket = ticket_resp.data[0]
 
+    if ticket["status"] in ["resolved", "closed"]:
+        raise HTTPException(status_code=400, detail="Ticket is closed")
+
+    now = datetime.utcnow().isoformat()
+
     supabase.table("ticket_messages").insert({
         "ticket_id": ticket_id,
         "sender_id": profile["id"],
         "message": message,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": now
     }).execute()
+
+    supabase.table("tickets").update({
+        "updated_at": now
+    }).eq("id", ticket_id).execute()
 
     log_audit_event(
         actor_id=profile["id"],
@@ -200,7 +223,6 @@ def add_ticket_message(
         target_id=ticket_id
     )
 
-    # notify user if support/admin replied
     if profile["role"] in ["support", "admin"]:
         create_notification(
             user_id=ticket["user_id"],
@@ -232,12 +254,14 @@ def update_ticket_status(
     if new_status not in allowed:
         raise HTTPException(status_code=400, detail="Invalid status")
 
+    now = datetime.utcnow().isoformat()
+
     resp = (
         supabase
         .table("tickets")
         .update({
             "status": new_status,
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": now
         })
         .eq("id", ticket_id)
         .is_("deleted_at", None)
@@ -246,6 +270,16 @@ def update_ticket_status(
 
     if not resp.data:
         raise HTTPException(status_code=404, detail="Ticket not found")
+
+    ticket = resp.data[0]
+
+    create_notification(
+        user_id=ticket["user_id"],
+        title="Ticket status updated",
+        message=f"Your ticket status is now '{new_status}'.",
+        notif_type="ticket_status",
+        action_url=f"/tickets/{ticket_id}"
+    )
 
     log_audit_event(
         actor_id=support["id"],
