@@ -1,51 +1,74 @@
+import os
 import onnxruntime as ort
 import numpy as np
-import requests
-from io import BytesIO
-from PIL import Image
+from app.logger import logger
+
+# --------------------------------------------------
+# MODEL PATHS (priority order)
+# --------------------------------------------------
+PRIMARY_MODEL_PATH = "app/ai/models/epicheck-ai.onnx"
+FALLBACK_MODEL_PATH = "app/ai/models/best.onnx"
+
+_session = None
+_model_path = None
 
 
-MODEL_PATH = "app/ai/models/epicheck.onnx"
+# --------------------------------------------------
+# LOAD MODEL (ONCE)
+# --------------------------------------------------
+def _load_model():
+    global _session, _model_path
+
+    if _session:
+        return _session
+
+    if os.path.exists(PRIMARY_MODEL_PATH):
+        _model_path = PRIMARY_MODEL_PATH
+    elif os.path.exists(FALLBACK_MODEL_PATH):
+        _model_path = FALLBACK_MODEL_PATH
+    else:
+        raise FileNotFoundError(
+            "No AI model found. Expected epicheck-ai.onnx or best.onnx"
+        )
+
+    logger.info(f"Loading AI model: {_model_path}")
+
+    _session = ort.InferenceSession(
+        _model_path,
+        providers=["CPUExecutionProvider"]
+    )
+
+    return _session
 
 
-def preprocess_image(image_url: str) -> np.ndarray:
+# --------------------------------------------------
+# RUN INFERENCE
+# --------------------------------------------------
+def run_inference(image_array: np.ndarray) -> dict:
     """
-    Download and preprocess image for ONNX model
+    image_array: preprocessed numpy array ready for model
     """
-    response = requests.get(image_url)
-    image = Image.open(BytesIO(response.content)).convert("RGB")
-    image = image.resize((224, 224))
 
-    img_array = np.array(image).astype("float32") / 255.0
-    img_array = np.transpose(img_array, (2, 0, 1))  # CHW
-    img_array = np.expand_dims(img_array, axis=0)   # NCHW
+    session = _load_model()
 
-    return img_array
-
-
-def run_inference(image_url: str) -> dict:
-    """
-    Run ONNX inference and return structured output
-    """
-    session = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
     input_name = session.get_inputs()[0].name
+    output_names = [o.name for o in session.get_outputs()]
 
-    input_tensor = preprocess_image(image_url)
-    outputs = session.run(None, {input_name: input_tensor})[0][0]
+    outputs = session.run(
+        output_names,
+        {input_name: image_array}
+    )
 
-    labels = ["melanoma", "nevus", "benign_keratosis"]
-    confidences = {labels[i]: float(outputs[i]) for i in range(len(labels))}
+    # --------------------------------------------------
+    # 🔽 ADAPT THIS TO YOUR MODEL OUTPUT FORMAT
+    # --------------------------------------------------
+    probabilities = outputs[0][0]
 
-    primary_label = max(confidences, key=confidences.get)
-    confidence = confidences[primary_label]
-
-    severity_score = confidence * 10
-    risk_level = "high" if confidence > 0.8 else "medium" if confidence > 0.5 else "low"
+    confidence = float(np.max(probabilities))
+    predicted_class = int(np.argmax(probabilities))
 
     return {
-        "primary_label": primary_label,
-        "secondary_labels": confidences,
+        "primary_label": predicted_class,
         "confidence": confidence,
-        "severity_score": severity_score,
-        "risk_level": risk_level
+        "model_used": os.path.basename(_model_path)
     }

@@ -52,12 +52,5 @@ def create_notification(
         # Never notify deleted / missing users
         return
 
-    supabase.table("notifications").insert({
-        "user_id": user_id,
-        "title": title,
-        "message": message,
-        "type": notif_type,
-        "action_url": action_url,
-        "is_read": False,
-        "created_at": datetime.utcnow().isoformat()
-    }).execute()
+    from app.supabase_client import db_insert
+

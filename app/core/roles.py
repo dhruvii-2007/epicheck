@@ -5,11 +5,11 @@ from app.core.dependencies import get_current_user
 def require_role(allowed_roles: list[str]):
     """
     Generic role guard.
-    Must be used AFTER get_current_user has populated request.state.profile
+    Ensures the authenticated user's role is allowed.
     """
     def checker(
-        request: Request,
-        profile=Depends(get_current_user)
+        profile=Depends(get_current_user),
+        request: Request | None = None,
     ):
         role = profile.get("role")
 

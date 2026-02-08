@@ -16,7 +16,9 @@ router = APIRouter(prefix="/cases", tags=["AI"])
 @router.post("/{case_id}/analyze")
 def analyze_case(case_id: str, profile=Depends(get_current_user)):
     """
-    Run AI inference on a case (idempotent, locked)
+    Run AI inference on a case.
+    - Idempotent
+    - Locked via DB state transition
     """
 
     # --------------------------------------------------
@@ -45,14 +47,14 @@ def analyze_case(case_id: str, profile=Depends(get_current_user)):
         )
 
     # --------------------------------------------------
-    # Atomic lock (prevent double run)
+    # Atomic lock (prevent double execution)
     # --------------------------------------------------
     lock_resp = (
         supabase
         .table("skin_cases")
         .update({
             "status": "processing",
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.utcnow().isoformat(),
         })
         .eq("id", case_id)
         .eq("status", "submitted")
@@ -112,7 +114,10 @@ def analyze_case(case_id: str, profile=Depends(get_current_user)):
     # Run inference
     # --------------------------------------------------
     try:
-        result = run_inference(storage_path)
+        result = run_inference(
+            storage_path=storage_path,
+            model_meta=model  # backward compatible
+        )
     except Exception as e:
         supabase.table("skin_cases").update({
             "status": "submitted"
@@ -123,17 +128,28 @@ def analyze_case(case_id: str, profile=Depends(get_current_user)):
             action="ai_analysis_failed",
             target_table="skin_cases",
             target_id=case_id,
-            metadata={"error": str(e)}
+            metadata={"error": str(e)},
         )
 
         raise HTTPException(status_code=500, detail="AI inference failed")
 
     # --------------------------------------------------
-    # Validate result
+    # Validate AI output
     # --------------------------------------------------
-    confidence = float(result["confidence"])
+    try:
+        confidence = float(result["confidence"])
+    except Exception:
+        confidence = -1
+
     if confidence < 0 or confidence > 1:
-        raise HTTPException(status_code=500, detail="Invalid AI confidence score")
+        supabase.table("skin_cases").update({
+            "status": "submitted"
+        }).eq("id", case_id).execute()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Invalid AI confidence score"
+        )
 
     # --------------------------------------------------
     # Store prediction
@@ -149,11 +165,11 @@ def analyze_case(case_id: str, profile=Depends(get_current_user)):
         "confidence": confidence,
         "severity_score": result.get("severity_score"),
         "risk_level": result.get("risk_level"),
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.utcnow().isoformat(),
     }).execute()
 
     # --------------------------------------------------
-    # Update case
+    # Update case summary
     # --------------------------------------------------
     supabase.table("skin_cases").update({
         "ai_primary_label": result["primary_label"],
@@ -162,7 +178,7 @@ def analyze_case(case_id: str, profile=Depends(get_current_user)):
         "severity_score": result.get("severity_score"),
         "risk_level": result.get("risk_level"),
         "status": "reviewed",
-        "updated_at": datetime.utcnow().isoformat()
+        "updated_at": datetime.utcnow().isoformat(),
     }).eq("id", case_id).execute()
 
     # --------------------------------------------------
@@ -176,8 +192,8 @@ def analyze_case(case_id: str, profile=Depends(get_current_user)):
         metadata={
             "model_id": model["id"],
             "model_name": model["name"],
-            "model_version": model["version"]
-        }
+            "model_version": model["version"],
+        },
     )
 
     create_notification(
@@ -185,12 +201,12 @@ def analyze_case(case_id: str, profile=Depends(get_current_user)):
         title="AI analysis completed",
         message="Your skin case has been analyzed by our AI system.",
         notif_type="system",
-        action_url=f"/cases/{case_id}"
+        action_url=f"/cases/{case_id}",
     )
 
     return {
         "status": "completed",
-        "ai_result": result
+        "ai_result": result,
     }
 
 
