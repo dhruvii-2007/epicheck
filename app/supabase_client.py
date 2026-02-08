@@ -30,3 +30,23 @@ if SUPABASE_ANON_KEY:
         SUPABASE_URL,
         SUPABASE_ANON_KEY
     )
+# --------------------------------------------------
+# Lightweight DB helper wrappers
+# --------------------------------------------------
+
+def db_select(table: str, **filters):
+    query = supabase.table(table).select("*")
+    for key, value in filters.items():
+        query = query.eq(key, value)
+    return query.execute().data
+
+
+def db_insert(table: str, data: dict):
+    return supabase.table(table).insert(data).execute().data
+
+
+def db_update(table: str, data: dict, **filters):
+    query = supabase.table(table).update(data)
+    for key, value in filters.items():
+        query = query.eq(key, value)
+    return query.execute().data
