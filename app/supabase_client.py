@@ -2,11 +2,12 @@
 
 import os
 from typing import Any, Dict, Optional
+from datetime import datetime, timezone
 from supabase import create_client, Client
-from app.core_logger import logger   # ✅ FIXED (no circular import)
+from app.logger import logger
 
 # --------------------------------------------------
-# SUPABASE CLIENT INIT
+# INIT
 # --------------------------------------------------
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -21,14 +22,10 @@ supabase: Client = create_client(
 )
 
 # --------------------------------------------------
-# INTERNAL HELPERS
+# INTERNAL
 # --------------------------------------------------
 
 def _apply_soft_delete_filter(query):
-    """
-    Enforces deleted_at IS NULL if column exists.
-    Safe to call on all tables.
-    """
     try:
         return query.is_("deleted_at", "null")
     except Exception:
@@ -42,11 +39,8 @@ def db_select(
     table: str,
     filters: Optional[Dict[str, Any]] = None,
     single: bool = False,
-    include_deleted: bool = False
+    include_deleted: bool = False,
 ):
-    """
-    Generic SELECT wrapper.
-    """
     try:
         query = supabase.table(table).select("*")
 
@@ -54,19 +48,19 @@ def db_select(
             query = _apply_soft_delete_filter(query)
 
         if filters:
-            for key, value in filters.items():
-                query = query.eq(key, value)
+            for k, v in filters.items():
+                query = query.eq(k, v)
 
-        response = query.single().execute() if single else query.execute()
+        res = query.single().execute() if single else query.execute()
 
-        if response.error:
-            raise RuntimeError(response.error.message)
+        if res.error:
+            raise RuntimeError(res.error.message)
 
-        return response.data
+        return res.data
 
-    except Exception:
+    except Exception as e:
         logger.exception(f"DB SELECT failed on {table}")
-        raise
+        raise e
 
 # --------------------------------------------------
 # INSERT
@@ -75,27 +69,19 @@ def db_select(
 def db_insert(
     table: str,
     payload: Dict[str, Any],
-    return_single: bool = True
+    return_single: bool = True,
 ):
-    """
-    INSERT with RETURNING *
-    """
     try:
-        response = (
-            supabase
-            .table(table)
-            .insert(payload)
-            .execute()
-        )
+        res = supabase.table(table).insert(payload).execute()
 
-        if response.error:
-            raise RuntimeError(response.error.message)
+        if res.error:
+            raise RuntimeError(res.error.message)
 
-        return response.data[0] if return_single else response.data
+        return res.data[0] if return_single else res.data
 
-    except Exception:
+    except Exception as e:
         logger.exception(f"DB INSERT failed on {table}")
-        raise
+        raise e
 
 # --------------------------------------------------
 # UPDATE
@@ -106,28 +92,24 @@ def db_update(
     filters: Dict[str, Any],
     payload: Dict[str, Any],
 ):
-    """
-    UPDATE with strict filters.
-    """
     if not filters:
         raise ValueError("UPDATE requires filters")
 
     try:
         query = supabase.table(table).update(payload)
+        for k, v in filters.items():
+            query = query.eq(k, v)
 
-        for key, value in filters.items():
-            query = query.eq(key, value)
+        res = query.execute()
 
-        response = query.execute()
+        if res.error:
+            raise RuntimeError(res.error.message)
 
-        if response.error:
-            raise RuntimeError(response.error.message)
+        return res.data
 
-        return response.data
-
-    except Exception:
+    except Exception as e:
         logger.exception(f"DB UPDATE failed on {table}")
-        raise
+        raise e
 
 # --------------------------------------------------
 # SOFT DELETE
@@ -135,15 +117,10 @@ def db_update(
 
 def db_soft_delete(
     table: str,
-    filters: Dict[str, Any]
+    filters: Dict[str, Any],
 ):
-    """
-    Sets deleted_at = now()
-    """
-    from datetime import datetime, timezone
-
     return db_update(
         table=table,
         filters=filters,
-        payload={"deleted_at": datetime.now(timezone.utc)}
+        payload={"deleted_at": datetime.now(timezone.utc)},
     )
