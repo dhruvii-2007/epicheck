@@ -25,9 +25,10 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
 
 FRONTEND_ORIGINS: List[str] = os.getenv(
     "FRONTEND_ORIGINS",
-    "http://epicheck.great-site.net",
-        "https://epicheck.great-site.net"
+    "http://epicheck.great-site.net,https://epicheck.great-site.net"
 ).split(",")
+
+
 
 # --------------------------------------------------
 # AI / System Flags
