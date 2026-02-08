@@ -1,5 +1,3 @@
-# app/routers/cases.py
-
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 from uuid import UUID
@@ -29,18 +27,29 @@ router = APIRouter()
 def create_case(
     user_id: UUID,
     image_url: str,
-    symptoms: Optional[str] = None,
+    symptom_codes: Optional[List[str]] = None,
+    symptoms_text: Optional[str] = None,
 ):
     case = db_insert(
         table="skin_cases",
         payload={
             "user_id": str(user_id),
             "image_url": image_url,
-            "symptoms": symptoms,
+            "symptoms": symptoms_text,
             "status": CASE_SUBMITTED,
             "created_at": datetime.now(timezone.utc),
         }
     )
+
+    if symptom_codes:
+        for code in symptom_codes:
+            db_insert(
+                table="case_symptoms",
+                payload={
+                    "case_id": case["id"],
+                    "symptom_code": code,
+                }
+            )
 
     audit_log(
         action="case_created",
@@ -52,7 +61,7 @@ def create_case(
     return case
 
 # --------------------------------------------------
-# GET CASE
+# GET CASE (FULL VIEW)
 # --------------------------------------------------
 
 @router.get("/{case_id}")
@@ -66,24 +75,20 @@ def get_case(case_id: UUID):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    predictions = db_select(
+    case["predictions"] = db_select(
         table="case_predictions",
         filters={"case_id": str(case_id)},
     )
 
-    files = db_select(
+    case["files"] = db_select(
         table="case_files",
         filters={"case_id": str(case_id)},
     )
 
-    symptoms = db_select(
+    case["symptoms_structured"] = db_select(
         table="case_symptoms",
         filters={"case_id": str(case_id)},
     )
-
-    case["predictions"] = predictions
-    case["files"] = files
-    case["symptoms"] = symptoms
 
     return case
 
@@ -129,6 +134,7 @@ def add_prediction(
     confidence: float,
     model_id: Optional[UUID] = None,
     bbox: Optional[dict] = None,
+    is_primary: bool = False,
 ):
     if not (0.0 <= confidence <= 1.0):
         raise HTTPException(status_code=400, detail="Confidence out of range")
@@ -143,6 +149,18 @@ def add_prediction(
             "model_id": str(model_id) if model_id else None,
         }
     )
+
+    if is_primary:
+        db_update(
+            table="skin_cases",
+            filters={"id": str(case_id)},
+            payload={
+                "ai_primary_label": label,
+                "ai_confidence": confidence,
+                "ai_result": label,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
 
     return prediction
 

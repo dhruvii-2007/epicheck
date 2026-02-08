@@ -1,9 +1,6 @@
-# app/routers/tickets.py
-
 from fastapi import APIRouter, HTTPException
 from uuid import UUID
 from datetime import datetime, timezone
-from typing import Optional
 
 from app.supabase_client import db_select, db_insert, db_update
 from app.config import VALID_TICKET_STATUSES
@@ -102,6 +99,26 @@ def update_ticket_status(
         table="tickets",
         filters={"id": str(ticket_id)},
         payload={"status": status}
+    )
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    return updated[0]
+
+# --------------------------------------------------
+# ASSIGN SUPPORT AGENT
+# --------------------------------------------------
+
+@router.patch("/{ticket_id}/assign")
+def assign_ticket(
+    ticket_id: UUID,
+    support_id: UUID,
+):
+    updated = db_update(
+        table="tickets",
+        filters={"id": str(ticket_id)},
+        payload={"assigned_to": str(support_id)}
     )
 
     if not updated:

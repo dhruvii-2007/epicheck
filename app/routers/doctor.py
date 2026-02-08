@@ -1,5 +1,3 @@
-# app/routers/doctors.py
-
 from fastapi import APIRouter, HTTPException
 from uuid import UUID
 from datetime import datetime, timezone
@@ -42,11 +40,13 @@ def get_doctor_profile(doctor_id: UUID):
 def submit_verification(
     doctor_id: UUID,
     document_url: str,
+    submitted_by: UUID,
 ):
     verification = db_insert(
         table="doctor_verifications",
         payload={
             "doctor_id": str(doctor_id),
+            "verified_by": str(submitted_by),
             "verification_status": "pending",
             "document_url": document_url,
             "verified_at": datetime.now(timezone.utc),
@@ -63,7 +63,7 @@ def submit_verification(
     return verification
 
 # --------------------------------------------------
-# REVIEW CASE (DOCTOR)
+# REVIEW CASE
 # --------------------------------------------------
 
 @router.post("/cases/{case_id}/review")
@@ -86,7 +86,7 @@ def review_case(
         raise HTTPException(status_code=404, detail="Case not found")
 
     if case.get("assigned_doctor") != str(doctor_id):
-        raise HTTPException(status_code=403, detail="Not assigned to this case")
+        raise HTTPException(status_code=403, detail="Doctor not assigned to this case")
 
     doctor_review = db_insert(
         table="doctor_reviews",
