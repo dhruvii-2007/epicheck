@@ -1,61 +1,54 @@
-# app/routers/notifications.py
+from fastapi import APIRouter, Depends, HTTPException
+from app.core.dependencies import get_current_user
+from app.supabase_client import supabase
 
-from fastapi import APIRouter, HTTPException
-from uuid import UUID
-from datetime import datetime, timezone
+router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
-from app.supabase_client import db_select, db_insert, db_update
-
-router = APIRouter()
 
 # --------------------------------------------------
-# GET USER NOTIFICATIONS
+# LIST NOTIFICATIONS
 # --------------------------------------------------
+@router.get("")
+def list_notifications(profile=Depends(get_current_user)):
+    """
+    List notifications (unread first)
+    """
 
-@router.get("/{user_id}")
-def get_notifications(user_id: UUID):
-    return db_select(
-        table="notifications",
-        filters={"user_id": str(user_id)},
+    resp = (
+        supabase
+        .table("notifications")
+        .select("*")
+        .eq("user_id", profile["id"])
+        .order("is_read", desc=False)   # unread first
+        .order("created_at", desc=True)
+        .execute()
     )
 
-# --------------------------------------------------
-# MARK NOTIFICATION AS READ
-# --------------------------------------------------
+    return resp.data or []
 
-@router.patch("/{notification_id}/read")
-def mark_as_read(notification_id: UUID):
-    updated = db_update(
-        table="notifications",
-        filters={"id": str(notification_id)},
-        payload={"is_read": True}
-    )
-
-    if not updated:
-        raise HTTPException(status_code=404, detail="Notification not found")
-
-    return updated[0]
 
 # --------------------------------------------------
-# CREATE NOTIFICATION (SYSTEM / INTERNAL)
+# MARK AS READ
 # --------------------------------------------------
-
-@router.post("/")
-def create_notification(
-    user_id: UUID,
-    title: str,
-    message: str,
-    type: str,
-    action_url: str | None = None,
+@router.post("/read")
+def mark_notifications_read(
+    payload: dict,
+    profile=Depends(get_current_user)
 ):
-    return db_insert(
-        table="notifications",
-        payload={
-            "user_id": str(user_id),
-            "title": title,
-            "message": message,
-            "type": type,
-            "action_url": action_url,
-            "created_at": datetime.now(timezone.utc),
-        }
-    )
+    """
+    Mark one or more notifications as read
+    """
+
+    notif_ids = payload.get("notification_ids")
+
+    if not notif_ids or not isinstance(notif_ids, list):
+        raise HTTPException(
+            status_code=400,
+            detail="notification_ids must be a list"
+        )
+
+    supabase.table("notifications").update({
+        "is_read": True
+    }).in_("id", notif_ids).eq("user_id", profile["id"]).execute()
+
+    return {"status": "marked_read"}

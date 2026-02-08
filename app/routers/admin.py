@@ -1,184 +1,193 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from datetime import datetime
+from app.core.roles import require_admin
+from app.supabase_client import supabase
 
-from ..auth import require_admin
-from ..supabase_client import db_select, db_insert, db_update
-from ..config import (
-    STATUS_APPROVED,
-    STATUS_REJECTED,
-    AUDIT_APPROVE_DOCTOR,
-    AUDIT_REVOKE_DOCTOR,
-    AUDIT_SUSPEND_USER
-)
-
-router = APIRouter(tags=["Admin"])
-
-# --------------------------------------------------
-# APPROVE DOCTOR
-# --------------------------------------------------
-@router.post("/approve-doctor/{doctor_id}")
-def approve_doctor(
-    doctor_id: str,
-    admin=Depends(require_admin)
-):
-    profile = db_select(
-        table="profiles",
-        filters={"id": doctor_id},
-        single=True
+router = APIRouter(prefix="/admin", tags=["Admin"])
+@router.get("/users")
+def list_users(admin=Depends(require_admin)):
+    """
+    List all users (profiles)
+    """
+    resp = (
+        supabase
+        .table("profiles")
+        .select("*")
+        .is_("deleted_at", None)
+        .order("created_at", desc=True)
+        .execute()
     )
-
-    if not profile or profile["role"] != "doctor":
-        raise HTTPException(status_code=404, detail="Doctor not found")
-
-    db_update(
-        table="profiles",
-        payload={
-            "status": STATUS_APPROVED,
-            "approved_at": datetime.utcnow().isoformat()
-        },
-        filters={"id": doctor_id}
-    )
-
-    db_insert(
-        table="audit_logs",
-        payload={
-            "actor_id": admin["sub"],
-            "actor_role": "admin",
-            "action": AUDIT_APPROVE_DOCTOR,
-            "target_table": "profiles",
-            "target_id": doctor_id,
-            "details": None,
-            "created_at": datetime.utcnow().isoformat()
-        }
-    )
-
-    return {"approved": True}
+    return resp.data or []
 
 
-# --------------------------------------------------
-# REJECT / REVOKE DOCTOR
-# --------------------------------------------------
-@router.post("/revoke-doctor/{doctor_id}")
-def revoke_doctor(
-    doctor_id: str,
-    reason: str = Query(..., min_length=3),
-    admin=Depends(require_admin)
-):
-    profile = db_select(
-        table="profiles",
-        filters={"id": doctor_id},
-        single=True
-    )
-
-    if not profile or profile["role"] != "doctor":
-        raise HTTPException(status_code=404, detail="Doctor not found")
-
-    db_update(
-        table="profiles",
-        payload={
-            "status": STATUS_REJECTED,
-            "suspension_reason": reason
-        },
-        filters={"id": doctor_id}
-    )
-
-    db_insert(
-        table="audit_logs",
-        payload={
-            "actor_id": admin["sub"],
-            "actor_role": "admin",
-            "action": AUDIT_REVOKE_DOCTOR,
-            "target_table": "profiles",
-            "target_id": doctor_id,
-            "details": {"reason": reason},
-            "created_at": datetime.utcnow().isoformat()
-        }
-    )
-
-    return {"revoked": True}
-
-
-# --------------------------------------------------
-# SUSPEND USER
-# --------------------------------------------------
-@router.post("/suspend-user/{user_id}")
+@router.put("/users/{user_id}/suspend")
 def suspend_user(
     user_id: str,
-    reason: str = Query(..., min_length=3),
+    payload: dict,
     admin=Depends(require_admin)
 ):
-    profile = db_select(
-        table="profiles",
-        filters={"id": user_id},
-        single=True
+    """
+    Suspend or unsuspend a user
+    """
+    suspend = payload.get("suspend", True)
+    reason = payload.get("reason")
+
+    update_data = {
+        "is_suspended": suspend,
+        "suspension_reason": reason,
+        "suspended_at": datetime.utcnow().isoformat() if suspend else None
+    }
+
+    resp = (
+        supabase
+        .table("profiles")
+        .update(update_data)
+        .eq("id", user_id)
+        .execute()
     )
 
-    if not profile:
+    if not resp.data:
         raise HTTPException(status_code=404, detail="User not found")
 
-    db_update(
-        table="profiles",
-        payload={
-            "is_suspended": True,
-            "suspension_reason": reason,
-            "suspended_at": datetime.utcnow().isoformat()
-        },
-        filters={"id": user_id}
-    )
-
-    db_insert(
-        table="audit_logs",
-        payload={
-            "actor_id": admin["sub"],
-            "actor_role": "admin",
-            "action": AUDIT_SUSPEND_USER,
-            "target_table": "profiles",
-            "target_id": user_id,
-            "details": {"reason": reason},
-            "created_at": datetime.utcnow().isoformat()
-        }
-    )
-
-    return {"suspended": True}
+    return {"status": "updated"}
 
 
-# --------------------------------------------------
-# VIEW AUDIT LOGS
-# --------------------------------------------------
-@router.get("/audit-logs")
-def get_audit_logs(
-    limit: int = Query(50, ge=1, le=200),
+@router.put("/users/{user_id}/role")
+def update_user_role(
+    user_id: str,
+    payload: dict,
     admin=Depends(require_admin)
 ):
-    logs = list(db_select("audit_logs"))
-    return {"logs": logs[:limit]}
+    """
+    Change user role
+    """
+    role = payload.get("role")
+    allowed_roles = ["user", "doctor", "admin", "support"]
 
+    if role not in allowed_roles:
+        raise HTTPException(status_code=400, detail="Invalid role")
 
-# --------------------------------------------------
-# VIEW REQUEST LOGS
-# --------------------------------------------------
-@router.get("/request-logs")
-def get_request_logs(
-    limit: int = Query(50, ge=1, le=200),
+    resp = (
+        supabase
+        .table("profiles")
+        .update({
+            "role": role,
+            "updated_at": datetime.utcnow().isoformat()
+        })
+        .eq("id", user_id)
+        .execute()
+    )
+
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"status": "role_updated"}
+@router.post("/ai-models")
+def register_ai_model(
+    payload: dict,
     admin=Depends(require_admin)
 ):
-    logs = list(db_select("request_logs"))
-    return {"logs": logs[:limit]}
+    """
+    Register AI model metadata
+    """
+    required = ["name", "version", "framework"]
+    if not all(payload.get(k) for k in required):
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    resp = supabase.table("ai_models").insert({
+        "name": payload["name"],
+        "version": payload["version"],
+        "framework": payload["framework"],
+        "checksum": payload.get("checksum"),
+        "trained_at": payload.get("trained_at"),
+        "is_active": False
+    }).execute()
+
+    return resp.data[0]
 
 
-# --------------------------------------------------
-# FEATURE FLAGS (ADMIN WRITE)
-# --------------------------------------------------
-@router.post("/feature-flags/{key}")
+@router.put("/ai-models/{model_id}/activate")
+def activate_ai_model(
+    model_id: str,
+    admin=Depends(require_admin)
+):
+    """
+    Activate selected model, deactivate others
+    """
+
+    # deactivate all
+    supabase.table("ai_models").update({
+        "is_active": False
+    }).execute()
+
+    # activate target
+    resp = (
+        supabase
+        .table("ai_models")
+        .update({
+            "is_active": True,
+            "deployed_at": datetime.utcnow().isoformat()
+        })
+        .eq("id", model_id)
+        .execute()
+    )
+
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    return {"status": "model_activated"}
+
+
+@router.get("/ai-models")
+def list_ai_models(admin=Depends(require_admin)):
+    """
+    List all AI models
+    """
+    resp = (
+        supabase
+        .table("ai_models")
+        .select("*")
+        .order("deployed_at", desc=True)
+        .execute()
+    )
+    return resp.data or []
+@router.get("/feature-flags")
+def list_feature_flags(admin=Depends(require_admin)):
+    """
+    List feature flags
+    """
+    resp = (
+        supabase
+        .table("feature_flags")
+        .select("*")
+        .execute()
+    )
+    return resp.data or []
+
+
+@router.put("/feature-flags/{key}")
 def update_feature_flag(
     key: str,
-    enabled: bool,
+    payload: dict,
     admin=Depends(require_admin)
 ):
-    db_update(
-        table="feature_flags",
-        payload={"enabled": enabled},
-        filters={"key": key}
+    """
+    Enable/disable a feature flag
+    """
+    enabled = payload.get("enabled")
+
+    if enabled is None:
+        raise HTTPException(status_code=400, detail="enabled field required")
+
+    resp = (
+        supabase
+        .table("feature_flags")
+        .update({"enabled": enabled})
+        .eq("key", key)
+        .execute()
     )
 
-    return {"key": key, "enabled": enabled}
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Feature flag not found")
+
+    return {"status": "updated"}

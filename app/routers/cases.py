@@ -1,207 +1,253 @@
-from fastapi import APIRouter, HTTPException
-from typing import List, Optional
-from uuid import UUID
-from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Request
+from uuid import uuid4
+from datetime import datetime
+from app.core.dependencies import get_current_user
+from app.supabase_client import supabase
 
-from app.supabase_client import (
-    db_select,
-    db_insert,
-    db_update,
-)
-from app.config import (
-    CASE_SUBMITTED,
-    CASE_PROCESSING,
-    CASE_REVIEWED,
-    CASE_CLOSED,
-    VALID_CASE_STATUSES,
-)
-from app.logger import audit_log
+router = APIRouter(prefix="/cases", tags=["Cases"])
 
-router = APIRouter()
 
 # --------------------------------------------------
 # CREATE CASE
 # --------------------------------------------------
-
-@router.post("/")
+@router.post("")
 def create_case(
-    user_id: UUID,
-    image_url: str,
-    symptom_codes: Optional[List[str]] = None,
-    symptoms_text: Optional[str] = None,
+    payload: dict,
+    profile=Depends(get_current_user)
 ):
-    case = db_insert(
-        table="skin_cases",
-        payload={
-            "user_id": str(user_id),
-            "image_url": image_url,
-            "symptoms": symptoms_text,
-            "status": CASE_SUBMITTED,
-            "created_at": datetime.now(timezone.utc),
+    """
+    Create a new skin case
+    """
+    case_data = {
+        "user_id": profile["id"],
+        "symptoms": payload.get("symptoms"),
+        "status": "submitted",
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+    resp = supabase.table("skin_cases").insert(case_data).execute()
+
+    if not resp.data:
+        raise HTTPException(status_code=500, detail="Failed to create case")
+
+    return resp.data[0]
+
+
+# --------------------------------------------------
+# UPLOAD CASE IMAGE
+# --------------------------------------------------
+@router.post("/{case_id}/upload")
+def upload_case_image(
+    case_id: str,
+    file: UploadFile = File(...),
+    profile=Depends(get_current_user)
+):
+    """
+    Upload case image to Supabase storage
+    """
+
+    # verify ownership
+    case_resp = (
+        supabase
+        .table("skin_cases")
+        .select("id")
+        .eq("id", case_id)
+        .eq("user_id", profile["id"])
+        .is_("deleted_at", None)
+        .limit(1)
+        .execute()
+    )
+
+    if not case_resp.data:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    # validate path
+    filename = f"{uuid4()}.{file.filename.split('.')[-1]}"
+    storage_path = f"case-images/{case_id}/{filename}"
+
+    # upload to storage
+    upload_resp = supabase.storage.from_("case-images").upload(
+        storage_path,
+        file.file,
+        {"content-type": file.content_type}
+    )
+
+    if upload_resp.get("error"):
+        raise HTTPException(status_code=500, detail="Image upload failed")
+
+    public_url = supabase.storage.from_("case-images").get_public_url(storage_path)
+
+    # insert into case_files
+    supabase.table("case_files").insert({
+        "case_id": case_id,
+        "file_url": public_url
+    }).execute()
+
+    # update skin_cases
+    supabase.table("skin_cases").update({
+        "image_url": public_url,
+        "updated_at": datetime.utcnow().isoformat()
+    }).eq("id", case_id).execute()
+
+    return {
+        "status": "uploaded",
+        "image_url": public_url
+    }
+
+
+# --------------------------------------------------
+# ADD SYMPTOMS
+# --------------------------------------------------
+@router.post("/{case_id}/symptoms")
+def add_case_symptoms(
+    payload: dict,
+    case_id: str,
+    profile=Depends(get_current_user)
+):
+    """
+    Add structured symptoms to a case
+    """
+    symptoms = payload.get("symptoms")
+
+    if not isinstance(symptoms, list):
+        raise HTTPException(status_code=400, detail="Symptoms must be a list")
+
+    # verify ownership
+    case_resp = (
+        supabase
+        .table("skin_cases")
+        .select("id")
+        .eq("id", case_id)
+        .eq("user_id", profile["id"])
+        .is_("deleted_at", None)
+        .execute()
+    )
+
+    if not case_resp.data:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    rows = [
+        {
+            "case_id": case_id,
+            "symptom_code": s
         }
-    )
+        for s in symptoms
+    ]
 
-    if symptom_codes:
-        for code in symptom_codes:
-            db_insert(
-                table="case_symptoms",
-                payload={
-                    "case_id": case["id"],
-                    "symptom_code": code,
-                }
-            )
+    supabase.table("case_symptoms").insert(rows).execute()
 
-    audit_log(
-        action="case_created",
-        actor_id=str(user_id),
-        actor_role="user",
-        details={"case_id": case["id"]},
-    )
+    return {"status": "symptoms_added"}
 
-    return case
 
 # --------------------------------------------------
-# GET CASE (FULL VIEW)
+# LIST USER CASES
 # --------------------------------------------------
+@router.get("")
+def list_cases(
+    page: int = 1,
+    limit: int = 10,
+    profile=Depends(get_current_user)
+):
+    """
+    Paginated list of user's cases
+    """
+    offset = (page - 1) * limit
 
+    resp = (
+        supabase
+        .table("skin_cases")
+        .select("*")
+        .eq("user_id", profile["id"])
+        .is_("deleted_at", None)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+
+    return {
+        "page": page,
+        "limit": limit,
+        "cases": resp.data or []
+    }
+
+
+# --------------------------------------------------
+# GET CASE DETAILS
+# --------------------------------------------------
 @router.get("/{case_id}")
-def get_case(case_id: UUID):
-    case = db_select(
-        table="skin_cases",
-        filters={"id": str(case_id)},
-        single=True
+def get_case_details(
+    case_id: str,
+    profile=Depends(get_current_user)
+):
+    """
+    Get full case details
+    """
+
+    case_resp = (
+        supabase
+        .table("skin_cases")
+        .select("*")
+        .eq("id", case_id)
+        .eq("user_id", profile["id"])
+        .is_("deleted_at", None)
+        .limit(1)
+        .execute()
     )
 
-    if not case:
+    if not case_resp.data:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    case["predictions"] = db_select(
-        table="case_predictions",
-        filters={"case_id": str(case_id)},
-    )
+    case = case_resp.data[0]
 
-    case["files"] = db_select(
-        table="case_files",
-        filters={"case_id": str(case_id)},
-    )
+    predictions = (
+        supabase
+        .table("case_predictions")
+        .select("*")
+        .eq("case_id", case_id)
+        .is_("deleted_at", None)
+        .execute()
+    ).data or []
 
-    case["symptoms_structured"] = db_select(
-        table="case_symptoms",
-        filters={"case_id": str(case_id)},
-    )
+    reviews = (
+        supabase
+        .table("doctor_reviews")
+        .select("*")
+        .eq("case_id", case_id)
+        .is_("deleted_at", None)
+        .execute()
+    ).data or []
 
-    return case
+    files = (
+        supabase
+        .table("case_files")
+        .select("*")
+        .eq("case_id", case_id)
+        .eq("marked_for_deletion", False)
+        .execute()
+    ).data or []
 
-# --------------------------------------------------
-# UPDATE CASE STATUS
-# --------------------------------------------------
+    symptoms = (
+        supabase
+        .table("case_symptoms")
+        .select("*")
+        .eq("case_id", case_id)
+        .execute()
+    ).data or []
 
-@router.patch("/{case_id}/status")
-def update_case_status(
-    case_id: UUID,
-    status: str,
-):
-    if status not in VALID_CASE_STATUSES:
-        raise HTTPException(status_code=400, detail="Invalid status")
+    return {
+        "case": case,
+        "files": files,
+        "symptoms": symptoms,
+        "predictions": predictions,
+        "doctor_reviews": reviews
+    }
+from app.services.notifications import create_notification
 
-    updated = db_update(
-        table="skin_cases",
-        filters={"id": str(case_id)},
-        payload={
-            "status": status,
-            "updated_at": datetime.now(timezone.utc),
-        }
-    )
-
-    if not updated:
-        raise HTTPException(status_code=404, detail="Case not found")
-
-    audit_log(
-        action="case_status_updated",
-        details={"case_id": str(case_id), "status": status},
-    )
-
-    return updated[0]
-
-# --------------------------------------------------
-# ADD AI PREDICTION
-# --------------------------------------------------
-
-@router.post("/{case_id}/predictions")
-def add_prediction(
-    case_id: UUID,
-    label: str,
-    confidence: float,
-    model_id: Optional[UUID] = None,
-    bbox: Optional[dict] = None,
-    is_primary: bool = False,
-):
-    if not (0.0 <= confidence <= 1.0):
-        raise HTTPException(status_code=400, detail="Confidence out of range")
-
-    prediction = db_insert(
-        table="case_predictions",
-        payload={
-            "case_id": str(case_id),
-            "label": label,
-            "confidence": confidence,
-            "bbox": bbox,
-            "model_id": str(model_id) if model_id else None,
-        }
-    )
-
-    if is_primary:
-        db_update(
-            table="skin_cases",
-            filters={"id": str(case_id)},
-            payload={
-                "ai_primary_label": label,
-                "ai_confidence": confidence,
-                "ai_result": label,
-                "updated_at": datetime.now(timezone.utc),
-            }
-        )
-
-    return prediction
-
-# --------------------------------------------------
-# ASSIGN DOCTOR
-# --------------------------------------------------
-
-@router.post("/{case_id}/assign")
-def assign_doctor(
-    case_id: UUID,
-    doctor_id: UUID,
-    assigned_by: UUID,
-    reason: Optional[str] = None,
-):
-    assignment = db_insert(
-        table="case_assignments",
-        payload={
-            "case_id": str(case_id),
-            "doctor_id": str(doctor_id),
-            "assigned_by": str(assigned_by),
-            "reason": reason,
-        }
-    )
-
-    db_update(
-        table="skin_cases",
-        filters={"id": str(case_id)},
-        payload={
-            "assigned_doctor": str(doctor_id),
-            "status": CASE_PROCESSING,
-            "updated_at": datetime.now(timezone.utc),
-        }
-    )
-
-    audit_log(
-        action="case_assigned",
-        actor_id=str(assigned_by),
-        details={
-            "case_id": str(case_id),
-            "doctor_id": str(doctor_id),
-        },
-    )
-
-    return assignment
+create_notification(
+    user_id=profile["id"],
+    title="Case submitted",
+    message="Your skin case has been submitted successfully.",
+    notif_type="case_submitted",
+    action_url=f"/cases/{case_id}"
+)

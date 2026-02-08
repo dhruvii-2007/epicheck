@@ -1,66 +1,173 @@
-# app/main.py
-
-from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
-from app.logger import logger, request_log
-from app.routers import auth, cases, doctors, notifications, tickets
-
-# --------------------------------------------------
-# APP INIT
-# --------------------------------------------------
+from fastapi import FastAPI
+from app.routers.health import router as health_router
 
 app = FastAPI(
-    title="EpiCheck API",
-    version="1.0.0",
+    title="Epicheck API",
+    version="1.0.0"
 )
 
-# --------------------------------------------------
-# CORS
-# --------------------------------------------------
+app.include_router(health_router)
+from fastapi import FastAPI
+from app.routers.health import router as health_router
+from app.routers.profile import router as profile_router
+from app.routers.consents import router as consents_router
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+app = FastAPI(
+    title="Epicheck API",
+    version="1.0.0"
 )
 
-# --------------------------------------------------
-# REQUEST LOGGING
-# --------------------------------------------------
+app.include_router(health_router)
+app.include_router(profile_router)
+app.include_router(consents_router)
+from fastapi import FastAPI
+from app.routers.health import router as health_router
+from app.routers.profile import router as profile_router
+from app.routers.consents import router as consents_router
+from app.routers.cases import router as cases_router
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    response: Response = await call_next(request)
+app = FastAPI(
+    title="Epicheck API",
+    version="1.0.0"
+)
 
-    try:
-        request_log(
-            user_id=request.headers.get("x-user-id"),
-            ip_address=request.client.host if request.client else None,
-            endpoint=request.url.path,
-            method=request.method,
-            status_code=response.status_code,
-        )
-    except Exception as e:
-        logger.error(f"Request logging failed: {e}")
+app.include_router(health_router)
+app.include_router(profile_router)
+app.include_router(consents_router)
+app.include_router(cases_router)
+from fastapi import FastAPI
+from app.routers.health import router as health_router
+from app.routers.profile import router as profile_router
+from app.routers.consents import router as consents_router
+from app.routers.cases import router as cases_router
+from app.routers.ai import router as ai_router
 
-    return response
+app = FastAPI(
+    title="Epicheck API",
+    version="1.0.0"
+)
 
-# --------------------------------------------------
-# ROUTERS
-# --------------------------------------------------
+app.include_router(health_router)
+app.include_router(profile_router)
+app.include_router(consents_router)
+app.include_router(cases_router)
+app.include_router(ai_router)
+from fastapi import FastAPI
+from app.routers.health import router as health_router
+from app.routers.profile import router as profile_router
+from app.routers.consents import router as consents_router
+from app.routers.cases import router as cases_router
+from app.routers.ai import router as ai_router
+from app.routers.doctors import router as doctors_router
 
-app.include_router(auth, prefix="/auth", tags=["auth"])
-app.include_router(cases, prefix="/cases", tags=["cases"])
-app.include_router(doctors, prefix="/doctors", tags=["doctors"])
-app.include_router(notifications, prefix="/notifications", tags=["notifications"])
-app.include_router(tickets, prefix="/tickets", tags=["tickets"])
+app = FastAPI(
+    title="Epicheck API",
+    version="1.0.0"
+)
 
-# --------------------------------------------------
-# HEALTH
-# --------------------------------------------------
+app.include_router(health_router)
+app.include_router(profile_router)
+app.include_router(consents_router)
+app.include_router(cases_router)
+app.include_router(ai_router)
+app.include_router(doctors_router)
+from fastapi import FastAPI
+from app.routers.health import router as health_router
+from app.routers.profile import router as profile_router
+from app.routers.consents import router as consents_router
+from app.routers.cases import router as cases_router
+from app.routers.ai import router as ai_router
+from app.routers.doctors import router as doctors_router
+from app.routers.notifications import router as notifications_router
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+app = FastAPI(
+    title="Epicheck API",
+    version="1.0.0"
+)
+
+app.include_router(health_router)
+app.include_router(profile_router)
+app.include_router(consents_router)
+app.include_router(cases_router)
+app.include_router(ai_router)
+app.include_router(doctors_router)
+app.include_router(notifications_router)
+from fastapi import FastAPI
+from app.routers.health import router as health_router
+from app.routers.profile import router as profile_router
+from app.routers.consents import router as consents_router
+from app.routers.cases import router as cases_router
+from app.routers.ai import router as ai_router
+from app.routers.doctors import router as doctors_router
+from app.routers.notifications import router as notifications_router
+from app.routers.tickets import router as tickets_router
+
+app = FastAPI(
+    title="Epicheck API",
+    version="1.0.0"
+)
+
+app.include_router(health_router)
+app.include_router(profile_router)
+app.include_router(consents_router)
+app.include_router(cases_router)
+app.include_router(ai_router)
+app.include_router(doctors_router)
+app.include_router(notifications_router)
+app.include_router(tickets_router)
+from fastapi import FastAPI
+from app.routers.health import router as health_router
+from app.routers.profile import router as profile_router
+from app.routers.consents import router as consents_router
+from app.routers.cases import router as cases_router
+from app.routers.ai import router as ai_router
+from app.routers.doctors import router as doctors_router
+from app.routers.notifications import router as notifications_router
+from app.routers.tickets import router as tickets_router
+from app.routers.admin import router as admin_router
+
+app = FastAPI(
+    title="Epicheck API",
+    version="1.0.0"
+)
+
+app.include_router(health_router)
+app.include_router(profile_router)
+app.include_router(consents_router)
+app.include_router(cases_router)
+app.include_router(ai_router)
+app.include_router(doctors_router)
+app.include_router(notifications_router)
+app.include_router(tickets_router)
+app.include_router(admin_router)
+from fastapi import FastAPI
+from app.middleware.request_logger import request_logger_middleware
+
+from app.routers.health import router as health_router
+from app.routers.profile import router as profile_router
+from app.routers.consents import router as consents_router
+from app.routers.cases import router as cases_router
+from app.routers.ai import router as ai_router
+from app.routers.doctors import router as doctors_router
+from app.routers.notifications import router as notifications_router
+from app.routers.tickets import router as tickets_router
+from app.routers.admin import router as admin_router
+
+app = FastAPI(
+    title="Epicheck API",
+    version="1.0.0"
+)
+
+# 🔍 request logging
+app.middleware("http")(request_logger_middleware)
+
+# routes
+app.include_router(health_router)
+app.include_router(profile_router)
+app.include_router(consents_router)
+app.include_router(cases_router)
+app.include_router(ai_router)
+app.include_router(doctors_router)
+app.include_router(notifications_router)
+app.include_router(tickets_router)
+app.include_router(admin_router)
