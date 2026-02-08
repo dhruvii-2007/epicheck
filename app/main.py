@@ -1,135 +1,70 @@
-from fastapi import FastAPI, Request
+# app/main.py
+
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
-from datetime import datetime
-import time
+from uuid import UUID
+from app.logger import logger, request_log
+from app.routers import cases, auth, doctors, notifications, tickets
 
-from app.config import API_VERSION
-from app.logger import logger
-
-# Routers
-from app.routes.user import router as user_router
-from app.routes.doctor import router as doctor_router
-from app.routes.admin import router as admin_router
-from app.routes.tickets import router as tickets_router
-
-# System
-from app.system.notifications import router as notifications_router
-from app.system.feature_flags import router as feature_flags_router
-
-# Rate limiting
-from app.ratelimit import init_rate_limit_state
-
-load_dotenv()
+# --------------------------------------------------
+# APP INIT
+# --------------------------------------------------
 
 app = FastAPI(
-    title="Epicheck API",
-    version=API_VERSION,
-    description="Epicheck backend — secure, audited medical AI platform"
+    title="EpiCheck API",
+    version="1.0.0"
 )
 
 # --------------------------------------------------
-# CORS
+# CORS (adjust origins in prod)
 # --------------------------------------------------
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://epicheck.great-site.net",
-        "https://epicheck.great-site.net"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --------------------------------------------------
-# STARTUP
+# REQUEST LOGGING MIDDLEWARE
 # --------------------------------------------------
-@app.on_event("startup")
-def startup():
-    init_rate_limit_state(app)
-    logger.info("Epicheck API started")
 
-# --------------------------------------------------
-# REQUEST LOGGING
-# --------------------------------------------------
 @app.middleware("http")
-async def request_logger(request: Request, call_next):
-    start = time.time()
-    response = await call_next(request)
-    duration = round(time.time() - start, 3)
+async def log_requests(request: Request, call_next):
+    response: Response = await call_next(request)
 
     try:
-        from app.supabase_client import db_insert
+        user_id = request.headers.get("x-user-id")
+        ip_address = request.client.host if request.client else None
 
-        db_insert(
-            table="request_logs",
-            payload={
-                "endpoint": request.url.path,
-                "method": request.method,
-                "status_code": response.status_code,
-                "ip_address": request.client.host if request.client else None,
-                "created_at": datetime.utcnow().isoformat()
-            }
+        request_log(
+            user_id=user_id,
+            ip_address=ip_address,
+            endpoint=request.url.path,
+            method=request.method,
+            status_code=response.status_code,
         )
     except Exception as e:
-        logger.warning(f"Request log failed: {e}")
-
-    logger.info(
-        f"{request.method} {request.url.path} "
-        f"{response.status_code} {duration}s"
-    )
+        logger.error(f"Middleware logging failed: {e}")
 
     return response
 
 # --------------------------------------------------
+# ROUTERS
+# --------------------------------------------------
+
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(cases.router, prefix="/cases", tags=["cases"])
+app.include_router(doctors.router, prefix="/doctors", tags=["doctors"])
+app.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
+app.include_router(tickets.router, prefix="/tickets", tags=["tickets"])
+
+# --------------------------------------------------
 # HEALTH CHECK
 # --------------------------------------------------
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-# --------------------------------------------------
-# ROUTERS (NO DOUBLE PREFIXES)
-# --------------------------------------------------
-app.include_router(
-    user_router,
-    prefix=f"/{API_VERSION}"
-)
-
-app.include_router(
-    doctor_router,
-    prefix=f"/{API_VERSION}"
-)
-
-app.include_router(
-    admin_router,
-    prefix=f"/{API_VERSION}"
-)
-
-app.include_router(
-    tickets_router,
-    prefix=f"/{API_VERSION}"
-)
-
-app.include_router(
-    notifications_router,
-    prefix=f"/{API_VERSION}"
-)
-
-app.include_router(
-    feature_flags_router,
-    prefix=f"/{API_VERSION}"
-)
-
-# --------------------------------------------------
-# GLOBAL ERROR HANDLER
-# --------------------------------------------------
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled error: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
